@@ -201,6 +201,94 @@ def get_owner_earnings(ticker: str) -> dict:
     }
 
 
+def get_fundamentals_history(ticker: str) -> dict:
+    """RawFinancials(A/B/C/E블록)에 필요한 연도별 원시 재무 데이터.
+
+    주의(2026-09-28 라이브 테스트로 확인): yfinance 무료 버전은 연간 재무제표를
+    보통 최근 4개년치만 제공한다(MSFT 기준 FY2023~FY2026 확인) — weights.yaml이
+    원래 염두에 둔 '5년 ROE'에는 1개년 부족하다. 이는 데이터 소스의 실제 한계이며,
+    이 함수는 있는 연수만큼만 반환하고 부족분을 임의로 채우지 않는다(RawFinancials
+    쪽에서 "N개년"으로 정직하게 표기).
+
+    반환: {"years": [...최신순...], "revenue": [...], "operating_income": [...],
+           "net_income": [...], "total_assets": [...], "total_liabilities": [...],
+           "equity": [...], "roe_pct": [...], "ocf": [...]}  (전부 최신이 인덱스 0)
+
+    주의(2026-09-28 라이브 테스트로 발견): 은행/보험/지주회사(JPM, BRK-B 등)는
+    "Total Revenue"/"Operating Income" 계정 자체가 없다(순이자이익 구조라
+    일반 기업 손익계산서와 항목이 다름). 이런 업종에서도 최소한 ROE/순이익
+    기반 항목은 채점 가능하도록, revenue/operating_income은 없으면 None
+    리스트로 채우고 net_income/total_assets/equity만 필수로 요구한다 —
+    이렇게 해야 은행주가 통째로 후보군에서 탈락하지 않는다. E블록(매출·영업이익
+    CAGR)과 F블록 EV/EBIT는 이 경우 자연스럽게 N/A 처리된다(fabrication 없음).
+    """
+    tk = yf.Ticker(ticker)
+    inc = tk.income_stmt
+    bal = tk.balance_sheet
+    cf = tk.cash_flow
+    if inc is None or inc.empty or bal is None or bal.empty:
+        raise ValueError(f"재무제표 조회 결과 없음: ticker={ticker}")
+
+    def _row(df: pd.DataFrame, candidates: list[str]) -> pd.Series | None:
+        if df is None or df.empty:
+            return None
+        for name in candidates:
+            if name in df.index:
+                return df.loc[name]
+        return None
+
+    revenue = _row(inc, ["Total Revenue"])
+    op_income = _row(inc, ["Operating Income"])
+    net_income = _row(inc, ["Net Income"])
+    total_assets = _row(bal, ["Total Assets"])
+    total_liabilities = _row(bal, ["Total Liabilities Net Minority Interest"])
+    equity = _row(bal, ["Stockholders Equity", "Common Stock Equity"])
+    ocf = _row(cf, ["Operating Cash Flow"])
+
+    if net_income is None:
+        raise ValueError(f"순이익(Net Income) 계정을 찾지 못했습니다: ticker={ticker}, "
+                          f"사용가능계정={list(inc.index)[:20]}")
+    if total_assets is None or equity is None:
+        raise ValueError(f"재무상태표 필수 계정을 찾지 못했습니다: ticker={ticker}, "
+                          f"사용가능계정={list(bal.index)[:20]}")
+
+    # 손익/재무상태표 연도가 다를 수 있어 공통 연도만 사용
+    common_years = [y for y in inc.columns if y in bal.columns]
+    common_years = sorted(common_years, reverse=True)
+
+    years, rev_l, opi_l, ni_l, ta_l, tl_l, eq_l, roe_l, ocf_l = [], [], [], [], [], [], [], [], []
+    for y in common_years:
+        r = revenue.get(y) if revenue is not None else None
+        o = op_income.get(y) if op_income is not None else None
+        n = net_income.get(y)
+        a, l, e = total_assets.get(y), (total_liabilities.get(y) if total_liabilities is not None else None), equity.get(y)
+        if any(pd.isna(v) for v in [n, a, e]):
+            continue
+        years.append(str(y.date()))
+        rev_l.append(float(r) if r is not None and not pd.isna(r) else None)
+        opi_l.append(float(o) if o is not None and not pd.isna(o) else None)
+        ni_l.append(float(n))
+        ta_l.append(float(a))
+        tl_l.append(float(l) if l is not None and not pd.isna(l) else None)
+        eq_l.append(float(e))
+        roe_l.append(float(n) / float(e) * 100 if e else None)
+        ocf_val = ocf.get(y) if ocf is not None else None
+        ocf_l.append(float(ocf_val) if ocf_val is not None and not pd.isna(ocf_val) else None)
+
+    return {
+        "ticker": ticker,
+        "years": years,
+        "revenue": rev_l,
+        "operating_income": opi_l,
+        "net_income": ni_l,
+        "total_assets": ta_l,
+        "total_liabilities": tl_l,
+        "equity": eq_l,
+        "roe_pct": roe_l,
+        "ocf": ocf_l,
+    }
+
+
 if __name__ == "__main__":
     import json
 

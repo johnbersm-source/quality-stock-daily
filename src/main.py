@@ -4,13 +4,14 @@ main.py
 리오님 확정: "그 시간 기준으로 해당되는 기업을 선정") → 전체 스코어링 →
 게이트통과+최고점 선정(src/selection.py) → PDF 생성 → 텔레그램 전송.
 
-=== collector -> RawFinancials 매핑 계층 상태 (2026-09-28) ===
+=== collector -> RawFinancials 매핑 계층 상태 (2026-09-29) ===
 - build_us_report(): 완료, MSFT/AAPL/KO/JPM/BRK-B 등 다수 후보 +
   select_daily_pick() 연동까지 실제 라이브 데이터로 검증됨(키 불필요, yfinance).
-- build_kr_report(): 코드는 작성됐으나 KRX_AUTH_KEY/DART_API_KEY가 이 세션에
-  없어 라이브 검증 전. 특히 dart_collector.get_financial_index()의 idx_nm
-  (ROE 등 지표명) 문자열 매칭은 실제 키로 1회 실행해 확인 필요(실패 시 사용가능
-  idx_nm 목록을 에러로 출력하도록 해둠).
+- build_kr_report(): 2026-09-29 KRX_AUTH_KEY/DART_API_KEY 모두 확보 후
+  삼성전자로 라이브 검증(--diagnose-kr). bsns_year 계산 버그 수정, ROE 매칭
+  정상 확인, B/F/G 블록이 구조적으로 0점이던 문제(필드 미연결)를 DART 전체
+  재무제표 실측 계정명으로 보강 완료. net_debt_repayment만 아직 미구현.
+  자세한 이력은 build_kr_report() 자체 docstring 참고.
 
 === 후보군 (2026-09-28부터 동적 생성, config/pipeline.yaml + src/universe.py) ===
 과거에는 config/watchlist.yaml에 47개 종목을 손으로 큐레이션해 고정해뒀으나,
@@ -75,14 +76,22 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
     """KR 후보 1개를 krx_collector(KRX Open API) + dart_collector(OpenDART)로
     채운 RawFinancials로 채점한다.
 
-    주의(2026-09-28, 미검증): 이 함수는 build_us_report와 동일한 설계를 따르지만,
-    이 세션은 KRX_AUTH_KEY/DART_API_KEY를 보유하지 않아 라이브로 실행해본 적이
-    없다. 특히 dart_collector.get_financial_index()의 idx_nm(지표명) 문자열은
-    "ROE"/"부채비율"을 포함한 여러 후보로 매칭을 시도하도록 짰지만, 실제 DART
-    응답의 정확한 표기를 이 세션에서 확인하지 못했다 — 실패 시 사용 가능한
-    idx_nm 전체 목록을 에러 메시지에 포함하도록 해서, 실제 키로 1회 실행하면
-    바로 고칠 수 있게 해뒀다. 정성 항목(해자/IFRS18/거시)은 US와 동일하게
-    자동으로 채우지 않고 N/A로 남긴다.
+    검증 이력: 2026-09-28 작성 당시엔 KRX_AUTH_KEY/DART_API_KEY가 없어 라이브
+    미검증 상태였음. 2026-09-29 실제 키로 삼성전자 1종목 라이브 검증
+    (--diagnose-kr) 중 두 가지를 발견·수정:
+    1) bsns_year(사업보고서 조회 연도) 계산이 뒤집혀 존재할 수 없는 미래
+       연도를 조회하던 버그 — 수정 완료.
+    2) ROE idx_nm 매칭은 정상 동작 확인. 다만 B(이익의질)·F(가격)·G(주주환원)
+       블록에 필요한 필드(ocf_5y/ni_5y/per/pbr/ev_ebit/dividend_total/
+       net_buyback_amount/treasury_retirement_ratio_pct)를 애초에 채우지
+       않고 있어 이 세 블록이 구조적으로 항상 0점이었음 — DART 전체
+       재무제표(get_full_financial_statement)에서 실측 확인한 계정명으로
+       전부 채워 넣도록 보강함(아래 코드 주석 참고). net_debt_repayment만
+       아직 미구현(차입금 관련 CF 계정 여러 개의 부호 처리를 확정 못해 보류,
+       정직하게 None으로 남김 — Shareholder Yield 컴포넌트는 나머지 두
+       요소만으로도 부분 계산됨).
+    정성 항목(해자/IFRS18/거시)은 US와 동일하게 자동으로 채우지 않고 N/A로
+    남긴다(리서치가 필요한 작업이라 이 함수가 지어낼 수 없음).
     """
     ticker = candidate["ticker"]
     market = candidate.get("market", "KOSPI")
@@ -107,26 +116,116 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
     # 있어 존재하지 않는 연도를 조회하는 버그였음, 실측 미검증 상태로 방치돼 있었음).
     bsns_year = str(as_of.year - 1 if as_of.month > 4 else as_of.year - 2)
 
+    # 2026-09-29: get_financial_account(주요계정, fnlttSinglAcnt.json)과
+    # get_owner_earnings 내부의 get_full_financial_statement(전체 재무제표,
+    # fnlttSinglAcntAll.json)을 각각 따로 호출하던 것을 후자 하나로 통합했다.
+    # 전체 재무제표가 주요계정의 상위집합이라(이 세션에서 PlayMCP로 삼성전자
+    # 실측 확인) 매출액/영업이익/자산총계 등도 여기서 그대로 뽑히고, 주요계정에는
+    # 없는 자사주 취득/배당금 지급/현금성자산/당기순이익(IS) 같은 세부 계정까지
+    # 같이 얻을 수 있어 API 호출 수가 줄어든다(850종목 규모 실행시간/호출량
+    # 리스크 완화에도 도움). 다만 전체 재무제표 쪽이 일부 소형주에서 013(데이터
+    # 없음)이 날 가능성이 주요계정보다 높을 수 있어, 그 경우에만 주요계정으로
+    # 폴백해 매출/영업이익/재무상태표 3항목만이라도 채운다(현금흐름표 세부
+    # 계정은 주요계정에 없어 그 경우 자연히 다시 None으로 남음 — 지어내지 않음).
+    #
+    # 이 세션에서 PlayMCP로 삼성전자 실제 응답을 직접 조회해 실측 확인한 계정명:
+    # - 영업활동현금흐름: account_nm에 "영업활동"+"현금흐름" 포함, sj_div=="CF"
+    # - 유형자산/무형자산의 취득: account_nm에 "유형자산"/"무형자산"+"취득", sj_div=="CF"
+    # - 자기주식의 취득: account_nm=="자기주식의 취득", sj_div=="CF"
+    # - 배당금의 지급: account_nm=="배당금의 지급", sj_div=="CF"
+    # - 현금및현금성자산: account_nm=="현금및현금성자산", sj_div=="BS"
+    # - 당기순이익: account_nm=="당기순이익", sj_div=="IS"(CF 섹션에도 동명 계정이
+    #   있어 sj_div로 먼저 거르는 게 필수 — 안 거르면 잘못된 값을 주울 수 있음)
     try:
-        owner_earnings = dart_collector.get_owner_earnings(corp_code, bsns_year)
+        full_rows = dart_collector.get_full_financial_statement(corp_code, bsns_year)
     except dart_collector.DartApiError as e:
-        print(f"[{ticker}] Owner Earnings 계산 실패: {e}")
-        owner_earnings = None
+        print(f"[{ticker}] 전체 재무제표 조회 실패: {e}")
+        full_rows = []
 
-    account_rows = dart_collector.get_financial_account(corp_code, bsns_year)
+    if not full_rows:
+        try:
+            full_rows = dart_collector.get_financial_account(corp_code, bsns_year)
+            if full_rows:
+                print(f"[{ticker}] 전체 재무제표 데이터 없음 — 주요계정으로 폴백"
+                      f"(현금흐름표 세부 계정은 이 경로에 없어 관련 항목은 N/A로 남음)")
+        except dart_collector.DartApiError as e:
+            print(f"[{ticker}] 주요계정 조회도 실패: {e}")
+
     revenue_3y = [
-        _dart_account(account_rows, "IS", ["매출액"], k)
+        _dart_account(full_rows, "IS", ["매출액"], k)
         for k in ("thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount")
     ]
     op_income_3y = [
-        _dart_account(account_rows, "IS", ["영업이익"], k)
+        _dart_account(full_rows, "IS", ["영업이익"], k)
         for k in ("thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount")
     ]
-    total_assets = _dart_account(account_rows, "BS", ["자산총계"])
-    total_liabilities = _dart_account(account_rows, "BS", ["부채총계"])
-    total_equity = _dart_account(account_rows, "BS", ["자본총계"])
+    ni_3y = [
+        _dart_account(full_rows, "IS", ["당기순이익"], k)
+        for k in ("thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount")
+    ]
+    ocf_3y = [
+        _dart_account(full_rows, "CF", ["영업활동", "현금흐름"], k)
+        for k in ("thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount")
+    ]
+    total_assets = _dart_account(full_rows, "BS", ["자산총계"])
+    total_liabilities = _dart_account(full_rows, "BS", ["부채총계"])
+    total_equity = _dart_account(full_rows, "BS", ["자본총계"])
+    cash_and_equiv = _dart_account(full_rows, "BS", ["현금및현금성자산"])
+    capex_tangible = _dart_account(full_rows, "CF", ["유형자산", "취득"])
+    capex_intangible = _dart_account(full_rows, "CF", ["무형자산", "취득"])
+    net_buyback_amount = _dart_account(full_rows, "CF", ["자기주식", "취득"])
+    dividend_total = _dart_account(full_rows, "CF", ["배당금", "지급"])
 
     debt_ratio_pct = (total_liabilities / total_equity * 100) if total_liabilities and total_equity else None
+
+    owner_earnings = None
+    if ocf_3y[0] is not None:
+        capex = (capex_tangible or 0) + (capex_intangible or 0)
+        owner_earnings = {"owner_earnings": ocf_3y[0] - capex}
+    else:
+        cf_names = [r.get("account_nm") for r in full_rows if r.get("sj_div") == "CF"]
+        print(f"[{ticker}] 영업활동현금흐름 계정을 찾지 못해 Owner Earnings 계산 불가"
+              + (f" — CF 섹션 계정명: {cf_names[:30]}" if cf_names else " (CF 섹션 자체가 없음)"))
+
+    # OCF>NI 이익의질 비교(B블록)용 — 연도별로 짝이 맞는 것만(oldest-first) 사용
+    ocf_ni_pairs = [
+        (o, n) for o, n in zip(reversed(ocf_3y), reversed(ni_3y))
+        if o is not None and n is not None
+    ]
+    ocf_5y = [o for o, _ in ocf_ni_pairs] or None
+    ni_5y = [n for _, n in ocf_ni_pairs] or None
+
+    # PER/PBR: DART 당기순이익/자본총계 + KRX 종가/발행주식수로 직접 계산
+    # (krx_collector.get_quote()는 PER/PBR을 KRX 응답에서 직접 못 채워 None으로
+    # 반환 중 — 정확한 KRX 투자지표 엔드포인트는 별도 확인 필요한 TODO로 남아있어,
+    # 그 전까지는 이렇게 실측 데이터로부터 직접 계산해 채운다)
+    per = pbr = ev_ebit = None
+    close_price = quote.get("close")
+    shares_outstanding = quote.get("shares_outstanding")
+    if close_price and shares_outstanding:
+        if ni_3y[0] and ni_3y[0] > 0:
+            per = round(close_price / (ni_3y[0] / shares_outstanding), 2)
+        if total_equity and total_equity > 0:
+            pbr = round(close_price / (total_equity / shares_outstanding), 2)
+    if market_cap and total_liabilities is not None and cash_and_equiv is not None and op_income_3y[0] and op_income_3y[0] > 0:
+        ev = market_cap + total_liabilities - cash_and_equiv
+        ev_ebit = round(ev / op_income_3y[0], 2)
+
+    # 자사주 소각비율(G블록, 상법개정/밸류업 수혜 지표) — tesstkAcqusDspsSttus.json의
+    # "총계" 행(보통주+우선주) change_qy_incnr(소각으로 인한 감소수량) 합계를
+    # 발행주식수로 나눔. 이 세션에서 삼성전자 실제 응답으로 필드명 실측 확인.
+    treasury_retirement_ratio_pct = None
+    try:
+        treasury_rows = dart_collector.get_treasury_stock(corp_code, bsns_year)
+        incnr_values = [
+            dart_collector._to_number(r.get("change_qy_incnr"))
+            for r in treasury_rows if r.get("acqs_mth1") == "총계"
+        ]
+        incnr_total = sum(v for v in incnr_values if v is not None)
+        if incnr_total and shares_outstanding:
+            treasury_retirement_ratio_pct = round(incnr_total / shares_outstanding * 100, 3)
+    except dart_collector.DartApiError as e:
+        print(f"[{ticker}] 자사주 소각현황 조회 실패: {e}")
 
     roe_series = None
     try:
@@ -190,8 +289,8 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         wacc_pct=wacc_pct,
         wacc_assumptions_note=wacc_note,
         moat_qual=None,
-        ocf_5y=None,
-        ni_5y=None,
+        ocf_5y=ocf_5y,
+        ni_5y=ni_5y,
         total_assets_latest=total_assets,
         ifrs18_segment_disclosed=None,
         ifrs18_mpm_qual=None,
@@ -201,16 +300,16 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         stress_test_result=stress,
         revenue_cagr_3y_pct=revenue_cagr,
         op_income_cagr_3y_pct=op_income_cagr,
-        per=None,
-        pbr=None,
-        ev_ebit=None,
+        per=per,
+        pbr=pbr,
+        ev_ebit=ev_ebit,
         industry_per_median=None,
         industry_pbr_median=None,
-        dividend_total=None,
-        net_buyback_amount=None,
-        net_debt_repayment=None,
+        dividend_total=dividend_total,
+        net_buyback_amount=net_buyback_amount,
+        net_debt_repayment=None,  # TODO: CF 차입금 관련 여러 계정(상환/차입 등) 부호 처리 확정 후 추가
         market_cap=market_cap,
-        treasury_retirement_ratio_pct=None,
+        treasury_retirement_ratio_pct=treasury_retirement_ratio_pct,
         macro_qual=None,
         margin_of_safety_result=mos_result_dict,
     )

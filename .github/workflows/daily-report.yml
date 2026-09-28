@@ -1,9 +1,16 @@
 name: Daily Quality Stock Report
 
-# 주의: main.py의 build_kr_report/build_us_report가 아직 NotImplementedError
-# placeholder 상태이므로, 이 워크플로는 현재 시점에서는 실행해도 실패합니다.
-# collector→RawFinancials 매핑 계층 구현이 선행되어야 실제로 동작합니다.
-# (2026-09-28, src/main.py 상단 주석 참고)
+# 상태(2026-09-28): build_kr_report/build_us_report 매핑 계층은 구현 완료.
+# US는 이 세션에서 실측 라이브 검증까지 끝남(키 불필요). KR은 KRX_AUTH_KEY/
+# DART_API_KEY가 리포지토리 Secrets로 등록되기 전까지는 게이트 통과 픽이
+# 나오지 않거나 오류가 날 수 있음(README 참고).
+#
+# 후보군은 2026-09-28부터 매 실행마다 src/universe.py가 동적으로 새로 만든다
+# (KR 코스피/코스닥 시가총액 상위 200+150 ≈ 350개, US S&P500 전체 ≈ 500개 —
+# 과거의 47개 정적 큐레이션 리스트 대신). 이 때문에 종목당 DART/yfinance
+# 호출이 크게 늘어 1회 실행 시간이 예측하기 어려워졌다 — timeout-minutes를
+# 넉넉하게 잡아뒀고(90분), 실제 실행시간/성공률은 1차 라이브 실행 후
+# 재조정이 필요할 수 있다(src/universe.py 상단 docstring 참고).
 
 on:
   schedule:
@@ -17,7 +24,7 @@ permissions:
 jobs:
   run-daily-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4

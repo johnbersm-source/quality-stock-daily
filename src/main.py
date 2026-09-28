@@ -1,15 +1,23 @@
 """
 main.py
-일일 파이프라인 오케스트레이터 — 후보군 전체 스코어링 → 게이트통과+최고점
-선정(src/selection.py, 2026-09-28 리오님과 확정) → PDF 생성 → 텔레그램 전송.
+일일 파이프라인 오케스트레이터 — 후보군 동적 생성(src/universe.py, 2026-09-28
+리오님 확정: "그 시간 기준으로 해당되는 기업을 선정") → 전체 스코어링 →
+게이트통과+최고점 선정(src/selection.py) → PDF 생성 → 텔레그램 전송.
 
 === collector -> RawFinancials 매핑 계층 상태 (2026-09-28) ===
-- build_us_report(): 완료, MSFT/AAPL/KO/JPM/BRK-B 등 24개 전체 후보 +
+- build_us_report(): 완료, MSFT/AAPL/KO/JPM/BRK-B 등 다수 후보 +
   select_daily_pick() 연동까지 실제 라이브 데이터로 검증됨(키 불필요, yfinance).
 - build_kr_report(): 코드는 작성됐으나 KRX_AUTH_KEY/DART_API_KEY가 이 세션에
   없어 라이브 검증 전. 특히 dart_collector.get_financial_index()의 idx_nm
   (ROE 등 지표명) 문자열 매칭은 실제 키로 1회 실행해 확인 필요(실패 시 사용가능
   idx_nm 목록을 에러로 출력하도록 해둠).
+
+=== 후보군 (2026-09-28부터 동적 생성, config/pipeline.yaml + src/universe.py) ===
+과거에는 config/watchlist.yaml에 47개 종목을 손으로 큐레이션해 고정해뒀으나,
+"매일 실행 시점 기준으로 해당 기업을 선정"하라는 지시에 따라 매 실행마다
+src/universe.py가 KR(코스피/코스닥 시가총액 상위 N, KOSPI200/KOSDAQ150 대리
+지표) + US(S&P500 전체)를 그 자리에서 새로 조회한다. 상세 배경은
+src/universe.py 상단 docstring 참고.
 
 === 실행에 필요한 환경변수 ===
 - KRX_AUTH_KEY, DART_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (전부 사용자 발급)
@@ -25,6 +33,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src import universe
 from src.collectors import dart_collector, krx_collector, us_collector
 from src.notify.telegram_notifier import TelegramNotifyError, send_pdf_report
 from src.report.pdf_generator import StockReportEntry, generate_pdf
@@ -39,8 +48,8 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "output"
 
 
-def _load_watchlist() -> dict:
-    with open(CONFIG_DIR / "watchlist.yaml", encoding="utf-8") as f:
+def _load_pipeline_config() -> dict:
+    with open(CONFIG_DIR / "pipeline.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -356,17 +365,27 @@ def _report_missing_pick(result: SelectionResult) -> str:
 
 def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | None:
     as_of = as_of or dt.date.today()
-    watchlist = _load_watchlist()
-    sel_cfg = watchlist.get("selection", {})
+    cfg = _load_pipeline_config()
+    sel_cfg = cfg.get("selection", {})
     cooldown_days = sel_cfg.get("cooldown_days", 10)
+    universe_cfg = cfg.get("universe", {})
+    kr_cfg = universe_cfg.get("kr", {})
+
+    kr_candidates = universe.get_kr_candidates(
+        as_of,
+        top_n_kospi=kr_cfg.get("top_n_kospi", 200),
+        top_n_kosdaq=kr_cfg.get("top_n_kosdaq", 150),
+    )
+    us_candidates = universe.get_us_candidates()
+    print(f"[{as_of.isoformat()}] 후보군 생성 완료: KR {len(kr_candidates)}개, US {len(us_candidates)}개")
 
     kr_result = select_daily_pick(
-        "KR", watchlist["kr_candidates"],
+        "KR", kr_candidates,
         score_fn=lambda c: build_kr_report(c, as_of),
         as_of=as_of, cooldown_days=cooldown_days,
     )
     us_result = select_daily_pick(
-        "US", watchlist["us_candidates"],
+        "US", us_candidates,
         score_fn=lambda c: build_us_report(c, as_of),
         as_of=as_of, cooldown_days=cooldown_days,
     )

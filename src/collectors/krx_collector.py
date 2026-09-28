@@ -353,6 +353,67 @@ def get_quote(ticker: str, market: str = "KOSPI", ref_date: str | None = None) -
     }
 
 
+def get_market_snapshot(market: str = "KOSPI", ref_date: str | None = None, max_lookback_days: int = 10) -> tuple[list[dict], str]:
+    """지정 시장의 특정 영업일자 전종목 스냅샷(종목코드/종목명/종가/시가총액)을 반환한다.
+
+    2026-09-28 배경(중요, 리오님과 확정): KOSPI200/KOSDAQ150 "공식 지수 구성종목"은
+    openapi.krx.co.kr(이 모듈이 쓰는 공식 키 기반 API)에 조회 엔드포인트 자체가 없고,
+    실제로는 data.krx.co.kr(정보데이터시스템)의 비공식 내부 API에서만 제공되는데
+    이 경로는 2024-12-27 이후 로그인(KRX_ID/PW)이 의무화됐다(봇탐지 목적). 일일
+    GitHub Actions 자동 실행에서 개인 계정 로그인을 매일 자동화하면 KRX 봇탐지
+    정책에 걸려 계정이 제한/정지될 위험이 있어(모듈 상단 히스토리와 동일한 이유로
+    이 아키텍처를 피해왔음), 정확한 지수 구성종목 대신 "시가총액 상위 N종목"을
+    대리 지표(proxy)로 쓰기로 리오님과 합의했다(2026-09-28). 이 함수와
+    get_top_n_by_market_cap()이 그 대리 지표를 만든다 — 이미 승인된 공식 API만
+    쓰므로 추가 키나 로그인이 전혀 필요 없다.
+
+    ref_date가 None이면 오늘부터 최대 max_lookback_days 영업일 소급하며 데이터가
+    있는 가장 최근 날짜를 사용한다(휴장일/당일 미정산 대응, get_quote()와 동일 패턴).
+
+    반환: (rows, used_date). rows의 각 행은 {"ticker", "name", "close",
+    "market_cap", "shares_outstanding"}.
+    """
+    service = SVC_KOSPI_STOCKS if market.upper() == "KOSPI" else SVC_KOSDAQ_STOCKS
+    d = dt.datetime.now() if ref_date is None else dt.datetime.strptime(ref_date, "%Y%m%d")
+
+    for _ in range(max_lookback_days):
+        if d.weekday() < 5:
+            bas_dd = d.strftime("%Y%m%d")
+            raw_rows = _fetch_day(service, bas_dd)
+            if raw_rows:
+                rows = []
+                for r in raw_rows:
+                    norm = _normalize_stock_row(r, bas_dd)
+                    rows.append({
+                        "ticker": r.get("ISU_CD", "")[-6:],  # 12자리 확장코드일 경우 끝 6자리가 단축코드
+                        "name": r.get("ISU_NM") or r.get("ISU_ABBRV") or "",
+                        "close": norm["close"],
+                        "market_cap": norm["market_cap"],
+                        "shares_outstanding": norm["shares_outstanding"],
+                    })
+                return rows, bas_dd
+        d -= dt.timedelta(days=1)
+
+    raise ValueError(
+        f"시장 스냅샷 조회 실패: market={market}, {max_lookback_days}영업일 소급 조회에도 데이터 없음"
+    )
+
+
+def get_top_n_by_market_cap(market: str = "KOSPI", n: int = 200, ref_date: str | None = None) -> list[dict]:
+    """get_market_snapshot() 결과를 시가총액(market_cap) 내림차순 정렬해 상위 n개만 반환한다.
+    market_cap이 None인 행(데이터 결측)은 순위에서 제외한다(지어내지 않음)."""
+    rows, used_date = get_market_snapshot(market=market, ref_date=ref_date)
+    ranked = sorted(
+        (r for r in rows if r.get("market_cap") is not None),
+        key=lambda r: r["market_cap"],
+        reverse=True,
+    )
+    top = ranked[:n]
+    for r in top:
+        r["as_of"] = used_date
+    return top
+
+
 def detect_share_jumps(
     rows: list[dict], threshold_high: float = 1.5, threshold_low: float = 0.667
 ) -> list[dict]:

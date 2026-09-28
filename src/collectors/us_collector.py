@@ -14,10 +14,14 @@ KRX/DART와 달리 yfinance는 별도 인증키가 필요 없어 이 샌드박�
 """
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 
 import pandas as pd
+import requests
 import yfinance as yf
+
+SP500_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 
 @dataclass
@@ -289,6 +293,55 @@ def get_fundamentals_history(ticker: str) -> dict:
     }
 
 
+def get_sp500_constituents() -> list[dict]:
+    """S&P 500 현재 구성종목을 위키피디아 "List of S&P 500 companies" 표에서
+    가져온다(2026-09-28, 리오님과 확정 — KOSPI200/KOSDAQ150와 달리 S&P500은
+    공식 API 없이도 자주 갱신되는 공개 표가 있어 별도 로그인/키 불필요, 무료·
+    비상업적 이용 통상 허용 범위).
+
+    주의: User-Agent 헤더 없이 요청하면 위키피디아가 403을 반환함(실측 확인) —
+    반드시 requests로 직접 받아 pandas.read_html에 넘긴다(pd.read_html(url)
+    직접 호출은 403).
+
+    반환: [{"ticker", "name", "sector"}, ...] — 티커는 yfinance 표기(BRK.B → BRK-B
+    등 '.'을 '-'로 치환)로 정규화한다(위키 원표기는 야후 표기와 다름, 실측 확인
+    필요 케이스: BRK.B, BF.B).
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; quality-stock-daily/1.0; "
+            "+https://github.com/johnbersm-source/quality-stock-daily)"
+        )
+    }
+    resp = requests.get(SP500_WIKIPEDIA_URL, headers=headers, timeout=20)
+    resp.raise_for_status()
+    tables = pd.read_html(io.StringIO(resp.text))
+    df = tables[0]
+
+    required_cols = {"Symbol", "Security", "GICS Sector"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(
+            f"S&P500 위키 표 컬럼 구조가 예상과 다릅니다(스크래핑 깨짐 가능성): "
+            f"실제 컬럼={list(df.columns)}"
+        )
+
+    out = []
+    for _, row in df.iterrows():
+        raw_ticker = str(row["Symbol"]).strip()
+        ticker = raw_ticker.replace(".", "-")
+        out.append({
+            "ticker": ticker,
+            "name": str(row["Security"]).strip(),
+            "sector": str(row["GICS Sector"]).strip(),
+        })
+    if len(out) < 400:
+        raise ValueError(
+            f"S&P500 구성종목이 {len(out)}개뿐입니다(500 근처여야 정상) — "
+            f"스크래핑 결과를 신뢰할 수 없어 중단합니다."
+        )
+    return out
+
+
 if __name__ == "__main__":
     import json
 
@@ -303,3 +356,7 @@ if __name__ == "__main__":
     print("\n=== 라이브 테스트: MSFT Owner Earnings (OCF - CapEx) ===")
     oe = get_owner_earnings("MSFT")
     print(json.dumps(oe, ensure_ascii=False, indent=2))
+
+    print("\n=== 라이브 테스트: S&P500 구성종목 스크래핑 ===")
+    sp500 = get_sp500_constituents()
+    print(f"{len(sp500)}개 종목 확인. 첫 5개: {sp500[:5]}")

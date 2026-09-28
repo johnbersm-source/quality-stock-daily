@@ -2,7 +2,9 @@
 selection.py
 2026-09-28 리오님과 확정한 종목 선정 로직:
 
-1. 후보군(config/watchlist.yaml) 전체를 v3 스코어카드로 채점한다.
+1. 후보군(src/universe.py가 매일 실행 시점 기준으로 동적 생성 — KR 코스피/코스닥
+   시가총액 상위 N + US S&P500, config/pipeline.yaml에서 파라미터 설정) 전체를
+   v3 스코어카드로 채점한다.
 2. 최근 cooldown_days 일(달력일 기준, 단순화) 내 이미 픽으로 나온 종목은
    그날 후보에서 제외한다(data/pick_history.json에 기록).
 3. 남은 후보 중 두 게이트(stress_test_gate, margin_of_safety_gate)를 모두
@@ -72,7 +74,7 @@ def select_daily_pick(
     as_of: dt.date,
     cooldown_days: int = 10,
 ) -> SelectionResult:
-    """candidates: watchlist.yaml의 kr_candidates 또는 us_candidates 리스트.
+    """candidates: src/universe.py의 get_kr_candidates()/get_us_candidates() 반환값.
     score_fn: 후보 dict(ticker/name/market 등)를 받아 ScoreReport를 반환하는 함수
     (실제로는 collector 호출 + scorecard.compute_score를 감싼 wrapper가 들어감)."""
     excluded = recent_picks(market, as_of, cooldown_days)

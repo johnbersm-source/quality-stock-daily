@@ -1,0 +1,38 @@
+name: Test Telegram (진단용, 수동 실행)
+
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID가 실제로 유효한지 가볍게 확인하는
+# 전용 워크플로. telegram_notifier.py의 __main__ 진단 모드를 그대로 실행 —
+# 봇 정보(getMe) 확인 후 실제로 테스트 메시지를 1건 전송한다. 전체
+# daily-report.yml(KRX/DART/yfinance 무거운 작업 전부 포함)을 돌리지 않고도
+# 모바일에서 "Run workflow" 한 번으로 텔레그램 연동만 빠르게 검증할 수 있게
+# 2026-09-29 신설. KRX_AUTH_KEY/DART_API_KEY는 필요 없음.
+#
+# 사용법(모바일 포함): 저장소 Actions 탭 → 왼쪽 목록에서 "Test Telegram" 선택
+# → "Run workflow" 버튼 → 실행 로그 확인. 성공하면 텔레그램에 실제 테스트
+# 메시지가 도착한다("[quality-stock-daily] 파이프라인 연결 테스트 메시지입니다.").
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-telegram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: TELEGRAM_BOT_TOKEN/CHAT_ID 진단 (telegram_notifier.py __main__ 모드)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 src/notify/telegram_notifier.py

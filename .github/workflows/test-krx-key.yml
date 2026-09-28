@@ -1,0 +1,41 @@
+name: Test KRX Key (진단용, 수동 실행)
+
+# KRX_AUTH_KEY가 실제로 유효하고, 필요한 4개 서비스(유가증권/코스닥
+# 일별매매정보, 코스피/코스닥 지수 일별시세)가 전부 승인됐는지 가볍게
+# 확인하는 전용 워크플로. 전체 daily-report.yml(DART/yfinance 850종목
+# 스코어링, 텔레그램 전송 등 무거운 작업 전부 포함)을 돌리지 않고도
+# 모바일에서 "Run workflow" 한 번으로 KRX 키 상태만 빠르게 검증할 수 있게
+# 2026-09-29 신설. DART_API_KEY/TELEGRAM 관련 Secrets는 필요 없음.
+#
+# 사용법(모바일 포함): 저장소 Actions 탭 → 왼쪽 목록에서 "Test KRX Key" 선택
+# → "Run workflow" 버튼 → 실행 로그의 "=== 결과 ===" 아래 내용 확인.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-krx-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: KRX_AUTH_KEY 진단 (krx_collector.py __main__ 모드)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+        run: python3 src/collectors/krx_collector.py
+
+      - name: KR 후보군(시가총액 상위 N) 조회 테스트 (universe.get_kr_candidates)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+        run: python3 -m src.universe

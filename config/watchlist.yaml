@@ -1,29 +1,70 @@
 # ============================================================
-# watchlist.yaml — 일일 분석 후보 종목 리스트 (PLACEHOLDER, 확정 아님)
+# watchlist.yaml — 일일 스코어링 후보군 (초안, 리오님 최종 검토 필요)
 #
-# 중요: 이 파일은 "어떤 종목을 후보군에 넣을지"와 "그중 오늘의 1종목을
-# 어떻게 고를지"에 대한 확정된 결정이 아직 없어서 만든 임시 초안입니다.
-# 지금까지의 대화에서 리오님과 이 부분(종목 유니버스 구성 기준, 선정
-# 알고리즘)을 논의한 적이 없어 제가 임의로 정할 수 없었고, 아래는
-# "파이프라인이 일단 끝까지 동작하는지" 확인하기 위한 최소 뼈대입니다.
+# 선정 방식(2026-09-28 확정): 매일 아래 후보군 전체를 v3 스코어카드로 채점 →
+# stress_test_gate + margin_of_safety_gate를 모두 통과한 종목 중 최고점을
+# 그날의 픽으로 선정. 게이트 통과 종목이 하나도 없으면 픽 없음으로 보고하고
+# 점수 상위 3개를 "관찰 대상 참고용"으로만 병기(src/selection.py 구현).
+# 최근 cooldown_days 영업일 내 이미 픽으로 나온 종목은 그날 후보에서 제외.
 #
-# main.py는 지금 요일(day-of-year)을 이용한 단순 라운드로빈으로 매일
-# 다른 종목을 고르도록 임시 구현했습니다 — 이것도 확정 방식이 아니라
-# 자리채움(placeholder)입니다. 실제 운영 전 아래 두 가지를 리오님이
-# 확정해주셔야 합니다:
-#   1) 후보 유니버스: 어떤 기준으로 종목을 이 리스트에 넣을지
-#      (예: KOSPI200/S&P500 구성종목 전체를 매일 스코어카드로 돌려서
-#      최고점 종목을 고르는 방식 vs 미리 정한 우량주 후보군 내 라운드로빈)
-#   2) 선정 알고리즘: 라운드로빈 vs "그날 점수가 가장 높은 종목" vs
-#      "게이트를 통과한 종목 중에서만 선정" 등
-#
-# 아래 종목들은 이 세션에서 실제로 다뤄본(삼성전자·KT&G·MSFT) 종목 +
-# 일반적으로 널리 알려진 대형 우량주 몇 개를 예시로 채워둔 것뿐입니다.
+# 아래 종목 리스트는 제가 초안으로 큐레이션한 것입니다 — 시가총액 상위 +
+# 업종 대표주로 일반적으로 널리 인정되는 대형주 위주로 담았습니다. 특정
+# 종목이 실제로 v3 스코어카드 기준을 통과할지는 전혀 보장하지 않으며(그건
+# 매일 스코어카드가 실측 데이터로 직접 판정합니다), 이 리스트는 순수히
+# "채점 대상 후보"일 뿐입니다. 넣고 싶은/빼고 싶은 종목이 있으면 말씀해주세요.
 # ============================================================
 
+selection:
+  cooldown_days: 10          # 최근 N일 내 픽 나온 종목은 후보에서 제외(달력일 기준, 영업일 아님 — 단순화)
+  min_gate_pass_required: true  # true = 게이트 미통과 종목은 아예 픽 후보에서 배제
+
 kr_candidates:
-  - {ticker: "005930", name: "삼성전자", market: "KOSPI"}
-  - {ticker: "033780", name: "KT&G", market: "KOSPI"}
+  - {ticker: "005930", name: "삼성전자", market: "KOSPI", sector: "반도체"}
+  - {ticker: "000660", name: "SK하이닉스", market: "KOSPI", sector: "반도체"}
+  - {ticker: "005380", name: "현대차", market: "KOSPI", sector: "자동차"}
+  - {ticker: "000270", name: "기아", market: "KOSPI", sector: "자동차"}
+  - {ticker: "005490", name: "POSCO홀딩스", market: "KOSPI", sector: "철강"}
+  - {ticker: "051910", name: "LG화학", market: "KOSPI", sector: "화학"}
+  - {ticker: "006400", name: "삼성SDI", market: "KOSPI", sector: "2차전지"}
+  - {ticker: "207940", name: "삼성바이오로직스", market: "KOSPI", sector: "바이오"}
+  - {ticker: "068270", name: "셀트리온", market: "KOSPI", sector: "바이오"}
+  - {ticker: "035420", name: "NAVER", market: "KOSPI", sector: "인터넷"}
+  - {ticker: "105560", name: "KB금융", market: "KOSPI", sector: "금융"}
+  - {ticker: "055550", name: "신한지주", market: "KOSPI", sector: "금융"}
+  - {ticker: "086790", name: "하나금융지주", market: "KOSPI", sector: "금융"}
+  - {ticker: "028260", name: "삼성물산", market: "KOSPI", sector: "지주/상사"}
+  - {ticker: "066570", name: "LG전자", market: "KOSPI", sector: "전자"}
+  - {ticker: "012330", name: "현대모비스", market: "KOSPI", sector: "자동차부품"}
+  - {ticker: "033780", name: "KT&G", market: "KOSPI", sector: "필수소비재"}
+  - {ticker: "090430", name: "아모레퍼시픽", market: "KOSPI", sector: "화장품"}
+  - {ticker: "010950", name: "S-Oil", market: "KOSPI", sector: "정유"}
+  - {ticker: "034730", name: "SK", market: "KOSPI", sector: "지주"}
+  - {ticker: "000810", name: "삼성화재", market: "KOSPI", sector: "보험"}
+  - {ticker: "138040", name: "메리츠금융지주", market: "KOSPI", sector: "금융"}
+  - {ticker: "010130", name: "고려아연", market: "KOSPI", sector: "비철금속"}
 
 us_candidates:
-  - {ticker: "MSFT", name: "Microsoft"}
+  - {ticker: "MSFT", name: "Microsoft", sector: "Technology"}
+  - {ticker: "AAPL", name: "Apple", sector: "Technology"}
+  - {ticker: "GOOGL", name: "Alphabet", sector: "Technology"}
+  - {ticker: "AMZN", name: "Amazon", sector: "Consumer Discretionary"}
+  - {ticker: "NVDA", name: "NVIDIA", sector: "Technology"}
+  - {ticker: "V", name: "Visa", sector: "Financials"}
+  - {ticker: "MA", name: "Mastercard", sector: "Financials"}
+  - {ticker: "JNJ", name: "Johnson & Johnson", sector: "Healthcare"}
+  - {ticker: "PG", name: "Procter & Gamble", sector: "Consumer Staples"}
+  - {ticker: "KO", name: "Coca-Cola", sector: "Consumer Staples"}
+  - {ticker: "PEP", name: "PepsiCo", sector: "Consumer Staples"}
+  - {ticker: "COST", name: "Costco", sector: "Consumer Staples"}
+  - {ticker: "WMT", name: "Walmart", sector: "Consumer Staples"}
+  - {ticker: "HD", name: "Home Depot", sector: "Consumer Discretionary"}
+  - {ticker: "UNH", name: "UnitedHealth Group", sector: "Healthcare"}
+  - {ticker: "LLY", name: "Eli Lilly", sector: "Healthcare"}
+  - {ticker: "BRK-B", name: "Berkshire Hathaway", sector: "Financials"}
+  - {ticker: "JPM", name: "JPMorgan Chase", sector: "Financials"}
+  - {ticker: "XOM", name: "ExxonMobil", sector: "Energy"}
+  - {ticker: "CVX", name: "Chevron", sector: "Energy"}
+  - {ticker: "AVGO", name: "Broadcom", sector: "Technology"}
+  - {ticker: "TXN", name: "Texas Instruments", sector: "Technology"}
+  - {ticker: "UNP", name: "Union Pacific", sector: "Industrials"}
+  - {ticker: "ADBE", name: "Adobe", sector: "Technology"}

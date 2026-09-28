@@ -211,26 +211,47 @@ def _normalize_stock_row(row: dict, bas_dd: str) -> dict:
 
 
 def get_index_ohlcv(index_name: str, start_date: str, end_date: str, market: str = "KOSPI") -> list[dict]:
-    """지수 일별 시세. index_name은 KRX가 반환하는 IDX_NM과 부분 일치로 매칭
-    (예: '코스피', '코스피 200')."""
+    """지수 일별 시세. index_name은 KRX가 반환하는 IDX_NM과 매칭한다.
+
+    2026-09-29 버그 수정(실측 확인): 부분 일치("코스피" in IDX_NM)만 쓰면
+    "코스피(외국주포함)"처럼 가격 필드가 전부 빈 값인 부가 지수 행까지
+    걸려서, 정작 찾으려던 순수 "코스피" 행은 확인도 못 해보고 그 자리에서
+    죽는 문제가 실측으로 확인됐다(라이브 로그: CLSPRC_IDX 등이 빈 문자열).
+    이제는 하루치 응답에서 (1) IDX_NM이 정확히 일치하는 행을 최우선으로,
+    없으면 (2) 부분 일치하는 행들을 순서대로 시도해서 "가격이 실제로 채워진
+    첫 번째 행"을 쓴다. 빈 값인 행은 조용히 건너뛰고 다음 후보를 본다
+    (그래도 하나도 못 찾으면 그날은 스킵 — 휴장일과 동일하게 처리).
+    """
     service = SVC_KOSPI_INDEX if market.upper() == "KOSPI" else SVC_KOSDAQ_INDEX
     out: list[dict] = []
     for bas_dd in _business_days(start_date, end_date):
         rows = _fetch_day(service, bas_dd)
-        for row in rows:
-            name = row.get("IDX_NM", "")
-            if index_name in name:
-                out.append(_normalize_index_row(row, bas_dd))
+        candidates = [r for r in rows if index_name in r.get("IDX_NM", "")]
+        # 정확히 일치하는 이름을 최우선으로, 그다음 부분 일치 순서 유지
+        candidates.sort(key=lambda r: 0 if r.get("IDX_NM") == index_name else 1)
+
+        picked = None
+        for row in candidates:
+            normalized = _normalize_index_row(row, bas_dd, strict=False)
+            if normalized is not None:
+                picked = normalized
+                break
+        if picked is not None:
+            out.append(picked)
     if not out:
         raise ValueError(
             f"지수 OHLCV 조회 결과 없음: index_name={index_name}, market={market}, "
-            f"{start_date}~{end_date} (필드명 'IDX_NM' 매칭 실패 가능성)"
+            f"{start_date}~{end_date} (필드명 'IDX_NM' 매칭 실패 또는 해당 기간 전부 "
+            f"가격 데이터 결측 가능성)"
         )
     out.sort(key=lambda r: r["date"])
     return out
 
 
-def _normalize_index_row(row: dict, bas_dd: str) -> dict:
+def _normalize_index_row(row: dict, bas_dd: str, strict: bool = True) -> dict | None:
+    """strict=True(기본값, 하위호환): 종가 없으면 KrxApiError.
+    strict=False: 종가 없으면 예외 대신 None 반환(get_index_ohlcv가 다음 후보
+    행으로 넘어가기 위해 사용)."""
     def _num(key: str):
         v = row.get(key)
         if v in (None, ""):
@@ -249,10 +270,12 @@ def _normalize_index_row(row: dict, bas_dd: str) -> dict:
         "low": _num("LWPRC_IDX"),
     })
     if normalized["close"] is None:
-        raise KrxApiError(
-            f"필드명 불일치 가능성: 'CLSPRC_IDX' 키로 지수 종가를 찾을 수 없습니다. "
-            f"raw row={row}"
-        )
+        if strict:
+            raise KrxApiError(
+                f"필드명 불일치 가능성: 'CLSPRC_IDX' 키로 지수 종가를 찾을 수 없습니다. "
+                f"raw row={row}"
+            )
+        return None
     return normalized
 
 

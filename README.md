@@ -15,16 +15,16 @@
 
 | 구성요소 | 상태 | 비고 |
 |---|---|---|
-| `src/collectors/krx_collector.py` | 구조 완성, 실측 미검증 | KRX Open API 기반. `KRX_AUTH_KEY` 필요 + 서비스별 개별 승인 필요 |
+| `src/collectors/krx_collector.py` | **완료, 실측 검증됨(2026-09-29)** | KRX Open API 기반. 삼성전자 D블록 스트레스테스트(지수+개별종목 시세) 실제 값 확인, 4개 서비스 승인 완료 |
 | `src/collectors/dart_collector.py` | 구조 완성, 실측 미검증 | OpenDART 기반. `DART_API_KEY` 필요 |
 | `src/collectors/us_collector.py` | **완료, MSFT 실측 검증됨** | yfinance 기반, 키 불필요 |
 | `src/scoring/` (8블록+2게이트) | **완료, 삼성전자 실측 데이터로 검증됨** | `tests/test_scorecard_samsung.py` |
 | `src/report/` (PDF 생성) | **완료, 실제 PDF 생성 검증됨** | xhtml2pdf + 번들 NanumGothic(`assets/fonts/`) |
 | `src/notify/telegram_notifier.py` | 구조 완성, 실측 미검증 | 봇 토큰 필요 |
 | `src/selection.py` (종목 선정 로직) | **완료, 로직 검증됨** | 게이트통과+최고점, 쿨다운, 전원미통과 폴백 — `tests/test_selection.py` |
-| `src/universe.py` (후보군 동적 생성) | **완료. US 실측 검증됨, KR은 KRX_AUTH_KEY 필요** | 매 실행마다 그 시점 기준으로 후보군 재계산(아래 "후보군 생성 방식" 참고) — `tests/test_universe.py` |
+| `src/universe.py` (후보군 동적 생성) | **완료, KR/US 모두 실측 검증됨(2026-09-29)** | 매 실행마다 그 시점 기준으로 후보군 재계산(아래 "후보군 생성 방식" 참고) — KR 350개, US 503개 실제 조회 확인. `tests/test_universe.py` |
 | `src/main.py` — `build_us_report()` | **완료, US 다수 후보 전체 라이브 검증됨** | 키 불필요(yfinance). `select_daily_pick()`까지 실제 연동 테스트 완료 |
-| `src/main.py` — `build_kr_report()` | 작성됨, 실측 미검증 | `KRX_AUTH_KEY`+`DART_API_KEY` 필요. ROE 지표명 매칭이 가장 확인 필요 |
+| `src/main.py` — `build_kr_report()` | 작성됨, KRX 부분만 실측 검증, DART 부분 미검증 | `KRX_AUTH_KEY`(검증 완료)+`DART_API_KEY`(미발급) 필요. ROE 지표명 매칭이 가장 확인 필요 |
 | `.github/workflows/daily-report.yml` | 작성됨, 아직 미실행 | KR 키 확보 전까지는 US만 픽 가능. pick_history.json 자동 커밋 포함 |
 
 ## 후보군 생성 방식 (2026-09-28, 정적 리스트 → 동적 생성으로 전환)
@@ -70,18 +70,19 @@
 
 ## 남은 작업 (다음 단계)
 
-1. **KR 키 발급 후 `build_kr_report()`·`src/universe.py`의 KR 경로 라이브 검증** —
-   코드는 US와 동일한 설계로 이미 작성돼 있다. 실제 키로 1회 실행해서
-   `dart_collector`의 ROE 지표명(idx_nm) 매칭이 맞는지, `krx_collector`의
-   시가총액 상위 N 스냅샷이 정상 동작하는지 확인하고 필요시 수정.
-2. 세 가지 외부 키 발급(전부 사용자 본인 명의로 무료 발급):
-   - `KRX_AUTH_KEY` — openapi.krx.co.kr (+ 서비스별 API 이용신청 승인)
+1. ~~KR 키 발급 및 `krx_collector.py`/`src/universe.py` KR 경로 라이브 검증~~
+   **완료 (2026-09-29)** — `KRX_AUTH_KEY` 4개 서비스(코스피/코스닥 주식
+   매매정보, 코스피/코스닥 지수 시세) 승인 확인, 삼성전자 D블록
+   스트레스테스트·시세·시가총액 상위 N 스냅샷 모두 실측 성공.
+2. 나머지 두 가지 외부 키 발급(사용자 본인 명의로 무료 발급):
    - `DART_API_KEY` — opendart.fss.or.kr
    - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — @BotFather
 3. 위 키들을 GitHub 저장소 Secrets로 등록.
-4. **1차 실제 GitHub Actions 실행으로 850종목 규모의 실행시간/API 호출량 확인**
+4. **`build_kr_report()`의 DART 의존 부분 라이브 검증** — `dart_collector`의
+   ROE 지표명(idx_nm) 매칭이 맞는지 실제 키로 확인.
+5. **1차 실제 GitHub Actions 실행으로 850종목 규모의 실행시간/API 호출량 확인**
    (위 리스크 섹션 참고) — 필요시 사전 스크리닝 설계.
-5. **정성평가 3항목(경제적 해자·IFRS18 MPM·거시/사이클, 총 17.5/100점) 보강**:
+6. **정성평가 3항목(경제적 해자·IFRS18 MPM·거시/사이클, 총 17.5/100점) 보강**:
    지금은 종목별 사실 근거가 필요해 자동 채점에서 의도적으로 비워두고
    N/A 처리 중 — Gemini 등으로 리서치 기반 정성평가를 채우는 단계가 필요하다.
 

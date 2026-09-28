@@ -11,6 +11,9 @@ on:
     - cron: "0 22 * * *"
   workflow_dispatch: {}  # 수동 실행(테스트용)
 
+permissions:
+  contents: write  # data/pick_history.json 커밋에 필요 (쿨다운 기록 영속화)
+
 jobs:
   run-daily-report:
     runs-on: ubuntu-latest
@@ -43,3 +46,20 @@ jobs:
           name: daily-report-${{ github.run_id }}
           path: data/output/*.pdf
           retention-days: 30
+
+      # GitHub Actions 러너는 매번 새로 체크아웃되는 휘발성 환경이라, 쿨다운(최근
+      # N일 내 픽 제외) 판단에 쓰는 data/pick_history.json이 러너 안에서만 갱신되고
+      # 다음날 실행에는 반영되지 않는다 — 그래서 실행 후 이 파일만 저장소에 다시
+      # 커밋해 영속화한다(리포트 PDF나 캐시는 커밋 대상 아님, .gitignore 참고).
+      - name: Persist pick history (쿨다운 기록 영속화)
+        if: always()
+        run: |
+          if [ -f data/pick_history.json ]; then
+            git config user.name "quality-stock-daily-bot"
+            git config user.email "bot@quality-stock-daily.local"
+            git add data/pick_history.json
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: update pick history [skip ci]"
+              git push
+            fi
+          fi

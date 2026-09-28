@@ -96,7 +96,16 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
     market_cap = quote["market_cap_krw"]
 
     corp_code = dart_collector.find_corp_code(ticker)
-    bsns_year = str(as_of.year if as_of.month > 4 else as_of.year - 1)  # 사업보고서는 통상 3월 공시, 그 전이면 전년도 사용
+    # 사업보고서(연간)는 회계연도 종료(12/31) 후 익년 3월말까지 공시된다.
+    # 예: FY2025 사업보고서는 2026년 3월에 나온다 — as_of.year의 사업보고서 자체가
+    # 존재할 수 없으므로(회계연도가 아직 안 끝났거나 방금 끝나 공시 전) 항상
+    # as_of.year - 1(또는 그보다 이전)을 조회해야 한다.
+    # - as_of가 4월 이후(공시 시즌 지남) -> 직전 회계연도(year-1) 사업보고서 확정 공시됨
+    # - as_of가 1~4월(공시 시즌 중/전) -> 그 직전 회계연도(year-1)는 아직 미공시일 수
+    #   있어 안전하게 그 전 연도(year-2) 사용
+    # 2026-09-29 실측 검증 과정에서 발견/수정(기존 코드는 year/year-1로 한 해씩 밀려
+    # 있어 존재하지 않는 연도를 조회하는 버그였음, 실측 미검증 상태로 방치돼 있었음).
+    bsns_year = str(as_of.year - 1 if as_of.month > 4 else as_of.year - 2)
 
     try:
         owner_earnings = dart_collector.get_owner_earnings(corp_code, bsns_year)
@@ -436,11 +445,52 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
     return out_path
 
 
+def _diagnose_kr_report(as_of: dt.date) -> None:
+    """build_kr_report()를 삼성전자 1종목으로만 실행해 KRX+DART 전체 연동을
+    빠르게 점검한다(850종목 전체를 도는 run_daily()와 달리 가볍게, 1종목만).
+    ROE idx_nm 매칭 등 DART 의존 부분이 실제 키로 정상 동작하는지 확인하는
+    용도 — 2026-09-29 KRX_AUTH_KEY/DART_API_KEY 모두 확보 후 신설."""
+    import json
+
+    candidate = {"ticker": "005930", "name": "삼성전자", "market": "KOSPI"}
+    print(f"=== build_kr_report() 진단: {candidate['name']}({candidate['ticker']}), as_of={as_of} ===")
+    report = build_kr_report(candidate, as_of)
+    print(json.dumps(
+        {
+            "ticker": report.ticker,
+            "company_name": report.company_name,
+            "market": report.market,
+            "as_of_date": report.as_of_date,
+            "total_score": report.total_score,
+            "total_possible": report.total_possible,
+            "all_gates_passed": report.all_gates_passed,
+            "final_grade": report.final_grade,
+            "blocks": [
+                {"key": b.block_key, "name": b.name, "points_awarded": b.points_awarded, "max_points": b.max_points}
+                for b in report.blocks
+            ],
+            "gates": [
+                {"key": g.gate_key, "passed": g.passed, "reason": g.reason}
+                for g in report.gates
+            ],
+        },
+        ensure_ascii=False, indent=2,
+    ))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="quality-stock-daily 일일 파이프라인 실행")
     parser.add_argument("--dry-run", action="store_true", help="PDF만 생성하고 텔레그램 전송은 생략")
     parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD (기본값: 오늘)")
+    parser.add_argument(
+        "--diagnose-kr", action="store_true",
+        help="전체 파이프라인 대신 build_kr_report()를 삼성전자 1종목으로만 실행해 KRX+DART 연동만 점검",
+    )
     args = parser.parse_args()
 
-    target_date = dt.date.fromisoformat(args.date) if args.date else None
-    run_daily(as_of=target_date, dry_run=args.dry_run)
+    target_date = dt.date.fromisoformat(args.date) if args.date else dt.date.today()
+
+    if args.diagnose_kr:
+        _diagnose_kr_report(target_date)
+    else:
+        run_daily(as_of=target_date, dry_run=args.dry_run)

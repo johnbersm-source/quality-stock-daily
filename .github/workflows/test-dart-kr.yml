@@ -1,0 +1,43 @@
+name: Test DART + KR Report (진단용, 수동 실행)
+
+# DART_API_KEY가 실제로 유효한지 + build_kr_report()의 KRX+DART 전체 연동
+# (특히 이전에 미검증 상태였던 ROE idx_nm 문자열 매칭)이 실제로 동작하는지
+# 삼성전자 1종목만으로 가볍게 확인하는 전용 워크플로. 850종목 전체를 도는
+# daily-report.yml을 돌리지 않고도 모바일에서 "Run workflow" 한 번으로 KR
+# 리포트 생성 경로 전체를 점검할 수 있게 2026-09-29 신설.
+# KRX_AUTH_KEY(이미 검증됨)와 DART_API_KEY 둘 다 필요, TELEGRAM 관련
+# Secrets는 필요 없음(전송 없이 리포트 데이터만 콘솔에 출력).
+#
+# 사용법(모바일 포함): 저장소 Actions 탭 → 왼쪽 목록에서
+# "Test DART + KR Report" 선택 → "Run workflow" 버튼 → 실행 로그 확인.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-dart-kr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: DART_API_KEY 기본 연결성 진단 (dart_collector.py __main__ 모드)
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+        run: python3 src/collectors/dart_collector.py
+
+      - name: KR 리포트 전체 연동 진단 (build_kr_report, 삼성전자 1종목)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+        run: python3 -m src.main --diagnose-kr

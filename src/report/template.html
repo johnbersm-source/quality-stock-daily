@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+    @font-face {
+        font-family: "NanumGothic";
+        src: url("{{ font_regular_path }}");
+    }
+    @font-face {
+        font-family: "NanumGothic";
+        src: url("{{ font_bold_path }}");
+        font-weight: bold;
+    }
+    @page {
+        size: A4;
+        margin: 1.8cm 1.6cm;
+        @frame footer_frame {
+            -pdf-frame-content: footer_content;
+            bottom: 0.8cm;
+            margin-left: 1.6cm;
+            margin-right: 1.6cm;
+            height: 1cm;
+        }
+    }
+    body {
+        font-family: "NanumGothic";
+        font-size: 9.5pt;
+        color: #1a1a1a;
+        line-height: 1.45;
+    }
+    h1 {
+        font-family: "NanumGothic";
+        font-size: 18pt;
+        color: #0b2545;
+        margin-bottom: 2pt;
+    }
+    .subtitle {
+        font-size: 10pt;
+        color: #555555;
+        margin-bottom: 14pt;
+    }
+    h2 {
+        font-family: "NanumGothic";
+        font-size: 13pt;
+        color: #0b2545;
+        background-color: #eef2f7;
+        padding: 5pt 8pt;
+        margin-top: 16pt;
+        margin-bottom: 6pt;
+    }
+    h3 {
+        font-family: "NanumGothic";
+        font-size: 10.5pt;
+        color: #0b2545;
+        margin-top: 10pt;
+        margin-bottom: 4pt;
+    }
+    .grade-badge {
+        display: inline;
+        font-size: 12pt;
+        font-weight: bold;
+        padding: 3pt 10pt;
+    }
+    .grade-최상급우량주 { color: #ffffff; background-color: #1e6b3c; }
+    .grade-우량주 { color: #ffffff; background-color: #2f7d4f; }
+    .grade-관찰대상 { color: #ffffff; background-color: #b8860b; }
+    .grade-관찰 { color: #ffffff; background-color: #8a1f1f; }
+    .grade-미달 { color: #ffffff; background-color: #8a1f1f; }
+
+    table.score-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 6pt;
+    }
+    table.score-table th {
+        background-color: #dfe7f0;
+        border: 0.5pt solid #b0b8c1;
+        padding: 4pt 5pt;
+        font-size: 9pt;
+        text-align: left;
+    }
+    table.score-table td {
+        border: 0.5pt solid #d5d9de;
+        padding: 4pt 5pt;
+        font-size: 8.7pt;
+        vertical-align: top;
+    }
+    td.num { text-align: right; white-space: nowrap; }
+    tr.block-row td { background-color: #f5f7fa; font-weight: bold; }
+    .missing-flag { color: #b8860b; font-size: 8pt; }
+    .gate-pass { color: #1e6b3c; font-weight: bold; }
+    .gate-fail { color: #8a1f1f; font-weight: bold; }
+    .gate-unknown { color: #8a1f1f; font-weight: bold; }
+    .gate-reason { font-size: 8.7pt; color: #333333; }
+    .verdict-box {
+        margin-top: 8pt;
+        padding: 8pt 10pt;
+        background-color: #fbeaea;
+        border: 0.5pt solid #d9a3a3;
+        font-size: 9pt;
+    }
+    .narrative-box {
+        margin-top: 8pt;
+        padding: 8pt 10pt;
+        background-color: #f7f9fb;
+        border: 0.5pt solid #d5d9de;
+        font-size: 9.3pt;
+        white-space: pre-wrap;
+    }
+    .disclaimer {
+        margin-top: 18pt;
+        font-size: 7.7pt;
+        color: #777777;
+        border-top: 0.5pt solid #cccccc;
+        padding-top: 6pt;
+    }
+    #footer_content {
+        font-size: 7.5pt;
+        color: #999999;
+        text-align: center;
+    }
+</style>
+</head>
+<body>
+
+<h1>Quality Stock Daily — 우량주 스코어카드 리포트</h1>
+<div class="subtitle">기준일: {{ as_of_date }} · 방법론: v3(자체 8블록·2게이트) — PDF 원본(실전경제학 리서치 Vol.1) 10항목 기반 확장</div>
+
+{% for stock in stocks %}
+<h2>{{ loop.index }}. {{ stock.report.company_name }} ({{ stock.report.ticker }}, {{ stock.report.market }})</h2>
+
+<p>
+    총점 <b>{{ "%.2f"|format(stock.report.total_score) }} / {{ "%.0f"|format(stock.report.total_possible) }}</b>
+    &nbsp;&nbsp; 최종 등급:
+    <span class="grade-badge grade-{{ stock.report.final_grade }}">{{ stock.report.final_grade }}</span>
+</p>
+
+{% if stock.report.final_grade == "관찰" %}
+<div class="verdict-box">
+    <b>[주의] '관찰' 등급으로 강등된 사유</b> (점수와 무관하게 게이트 미통과 시 자동 강등):<br/>
+    {% for reason in stock.report.gate_failure_reasons() %}
+    · {{ reason }}<br/>
+    {% endfor %}
+</div>
+{% endif %}
+
+<h3>게이트 판정</h3>
+<table class="score-table">
+<tr><th style="width:28%">게이트</th><th style="width:14%">판정</th><th>근거</th></tr>
+{% for g in stock.report.gates %}
+<tr>
+    <td>{{ g.gate_key }}</td>
+    <td class="{{ 'gate-pass' if g.passed == True else ('gate-fail' if g.passed == False else 'gate-unknown') }}">
+        {{ '통과' if g.passed == True else ('미통과' if g.passed == False else '판정불가') }}
+    </td>
+    <td class="gate-reason">{{ g.reason }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h3>8블록 점수 상세</h3>
+<table class="score-table">
+<tr>
+    <th style="width:26%">블록 / 항목</th>
+    <th style="width:12%">점수</th>
+    <th>설명 (쉬운 풀이 포함)</th>
+</tr>
+{% for block in stock.report.blocks %}
+<tr class="block-row">
+    <td>{{ block.name }}</td>
+    <td class="num">{{ "%.2f"|format(block.points_awarded) }} / {{ "%.0f"|format(block.max_points) }}
+        {% if block.has_missing_data %}<div class="missing-flag">일부 데이터 결측</div>{% endif %}
+    </td>
+    <td></td>
+</tr>
+{% for c in block.components %}
+<tr>
+    <td>&nbsp;&nbsp;· {{ c.name }}</td>
+    <td class="num">{{ "%.2f"|format(c.points_awarded) if c.points_awarded is not none else "N/A" }} / {{ "%.1f"|format(c.max_points) }}</td>
+    <td>{{ c.note }}</td>
+</tr>
+{% endfor %}
+{% endfor %}
+</table>
+
+{% if stock.narrative %}
+<h3>종합 코멘트</h3>
+<div class="narrative-box">{{ stock.narrative }}</div>
+{% endif %}
+
+{% endfor %}
+
+<div class="disclaimer">
+    본 리포트는 자동화된 정량·정성 스코어카드 산출 결과이며 투자 조언이 아닙니다. 데이터 결측 항목은
+    임의로 추정하지 않고 "N/A"로 표기했으며, 이는 저평가/고평가 판단과 무관합니다. 게이트(스트레스테스트,
+    안전마진)를 통과하지 못한 종목은 총점과 무관하게 "관찰" 등급으로 표기됩니다. 투자 판단과 책임은
+    투자자 본인에게 있습니다.
+</div>
+
+<div id="footer_content">Quality Stock Daily · {{ as_of_date }} 자동 생성 · v3 스코어카드</div>
+
+</body>
+</html>

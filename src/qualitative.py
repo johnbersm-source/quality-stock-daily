@@ -32,7 +32,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import random
 import re
+import time
 from pathlib import Path
 
 from .scoring.models import QualitativeScore
@@ -58,6 +60,29 @@ _MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
 # 최신성이 특히 중요한 항목은 이 한계가 더 크다는 점을 evidence에 모델이
 # 스스로 명시하도록 요구한다.
 _USE_GROUNDING_DEFAULT = os.environ.get("GEMINI_USE_GROUNDING", "0") == "1"
+
+# === 2026-09-30 실전 850종목 규모 실행에서 발견한 문제: Gemini 분당 요청수(RPM)
+# 한도 429 ===
+# gemini-flash-lite-latest(내부적으로 gemini-3.5-flash-lite로 라우팅됨)의 무료
+# 티어 RPM 한도가 15인데, 정성평가 2단계(top-N 재채점)가 종목당 최대 4개
+# 컴포넌트(해자·거시·IFRS18·상법개정)를 거의 곧바로 연달아 호출하다 보니
+# 20종목×KR+US 배치에서 91/160여 회 호출이 "429 RESOURCE_EXHAUSTED ...
+# limit: 15, model: gemini-3.5-flash-lite" 로 실패해 다수 종목(심지어 그날의
+# 최종 픽 종목까지)에서 정성 컴포넌트가 N/A로 떨어지는 게 실측 확인됐다
+# (2026-09-29 22:15 UTC daily-report.yml 스케줄 실행, run 36638443946).
+# krx_collector.py가 이미 겪은 것과 같은 종류의 문제라, 같은 원칙(요청 간
+# 최소 페이싱 + 429 전용 지수 백오프 재시도)으로 대응한다.
+_MIN_REQUEST_INTERVAL_SEC = 4.5  # RPM=15 → 이론상 4.0초, 여유를 둬 4.5초로 보수적 설정
+_last_request_monotonic: float = 0.0
+
+
+def _pace_gemini_request() -> None:
+    global _last_request_monotonic
+    now = time.monotonic()
+    wait = _MIN_REQUEST_INTERVAL_SEC - (now - _last_request_monotonic)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_monotonic = time.monotonic()
 
 
 class QualitativeResearchError(Exception):
@@ -114,7 +139,9 @@ def _client():
     return genai.Client(api_key=key)
 
 
-def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool | None = None) -> dict:
+def _call_gemini_json(
+    prompt: str, model: str | None = None, use_grounding: bool | None = None, max_retries: int = 4,
+) -> dict:
     """Gemini를 호출해 JSON 응답을 파싱한다. 실패 시 QualitativeResearchError를
     던진다(호출부에서 잡아 None 처리).
 
@@ -122,7 +149,13 @@ def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool
     켜면 429 RESOURCE_EXHAUSTED가 발생하는 게 실측 확인됐다(리오님이 결제
     카드 연결을 원치 않아 이 경로를 그대로 씀). use_grounding=False로 순수
     텍스트 생성만 시도하면 무료 티어에서도 되는지 diagnose_gemini_quota()로
-    조합별로 실측 확인한다 — 이 함수 자체는 두 모드 다 지원하도록 파라미터화."""
+    조합별로 실측 확인한다 — 이 함수 자체는 두 모드 다 지원하도록 파라미터화.
+
+    2026-09-30: grounding을 꺼도 분당 요청수(RPM=15) 한도가 있어, top-N
+    재채점처럼 짧은 시간에 연달아 호출하면 여전히 429가 난다는 게 850종목
+    규모 실전 실행에서 실측됨(모듈 상단 _MIN_REQUEST_INTERVAL_SEC 주석
+    참고). 그래서 매 호출 전에 페이싱을 걸고, 그래도 429가 나면 지수
+    백오프로 재시도한다(krx_collector.py의 429 대응과 동일한 원칙)."""
     from google.genai import types
 
     if use_grounding is None:
@@ -134,12 +167,26 @@ def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool
         tools=tools,
         temperature=0.1,  # 채점 일관성 우선 — 창의성 불필요
     )
-    try:
-        response = client.models.generate_content(
-            model=model or _MODEL_NAME, contents=prompt, config=config,
-        )
-    except Exception as e:  # noqa: BLE001 - Gemini SDK 예외 타입이 다양해 광범위하게 잡음
-        raise QualitativeResearchError(f"Gemini 호출 실패: {e}") from e
+
+    response = None
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        _pace_gemini_request()
+        try:
+            response = client.models.generate_content(
+                model=model or _MODEL_NAME, contents=prompt, config=config,
+            )
+            break
+        except Exception as e:  # noqa: BLE001 - Gemini SDK 예외 타입이 다양해 광범위하게 잡음
+            last_error = e
+            is_rate_limit = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+            if not is_rate_limit or attempt == max_retries:
+                raise QualitativeResearchError(f"Gemini 호출 실패: {e}") from e
+            backoff = min(2 ** attempt * 3, 60) + random.uniform(0, 2)
+            print(f"[qualitative] Gemini 429(RPM 한도) — {backoff:.1f}초 대기 후 재시도 ({attempt + 1}/{max_retries})")
+            time.sleep(backoff)
+    if response is None:  # pragma: no cover - 위 루프에서 항상 break되거나 raise됨, 방어적 처리
+        raise QualitativeResearchError(f"Gemini 호출 실패: {last_error}")
 
     text = (response.text or "").strip()
     if not text:

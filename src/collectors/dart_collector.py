@@ -131,6 +131,19 @@ def _get_json(endpoint: str, params: dict, max_retries: int = 2) -> dict:
     raise DartApiError(f"네트워크 오류로 {max_retries + 1}회 시도 후 실패: {last_err}")
 
 
+# 2026-09-29: 850종목 규모 1차 실전 실행 2회 모두 이 함수(corpCode.xml 대량
+# 다운로드)가 opendart.fss.or.kr에 대한 커넥션 타임아웃으로 실패했는데, 이
+# 함수에 실패를 기억하는 장치가 없어서 KR 후보 350개가 "각자" 이 다운로드를
+# 재시도하며 종목당 250~300초씩(관측값) 날리다 GitHub Actions 90분
+# 타임아웃으로 전체 파이프라인이 강제취소되는 사고가 실제로 2회 발생했다
+# (실행 ID 36506472350, 36514245359 — 20종목도 채 못 끝냄, 예상 잔여시간이
+# 24시간 이상으로 찍힘). 프로세스 1회 실행 중 이미 실패했으면 같은 오류를
+# 즉시(네트워크 재시도 없이) 재발생시켜 나머지 후보들이 수 초 내로 스킵되게
+# 하는 프로세스 내 서킷브레이커를 추가한다.
+_corp_code_map_memo: dict[str, str] | None = None
+_corp_code_map_memo_error: Exception | None = None
+
+
 def download_corp_code_map(force_refresh: bool = False) -> dict[str, str]:
     """전종목(상장+비상장 포함) 고유번호(corp_code) ↔ 종목코드(stock_code) 매핑을
     다운로드하고 로컬에 캐시한다. DART는 이 전체 목록을 ZIP(내부에 CORPCODE.xml)
@@ -139,22 +152,81 @@ def download_corp_code_map(force_refresh: bool = False) -> dict[str, str]:
     반환: {stock_code(6자리): corp_code(8자리)} — stock_code가 빈 값인 비상장/
     코드없는 법인은 제외하고 반환한다.
     """
+    global _corp_code_map_memo, _corp_code_map_memo_error
+
+    if not force_refresh and _corp_code_map_memo is not None:
+        return _corp_code_map_memo
+    if not force_refresh and _corp_code_map_memo_error is not None:
+        raise _corp_code_map_memo_error
+
     cache_file = CACHE_DIR / "corp_code_map.json"
-    if cache_file.exists() and not force_refresh:
-        import json
-        return json.loads(cache_file.read_text(encoding="utf-8"))
+    cache_age_days: float | None = None
+    if cache_file.exists():
+        cache_age_days = (time.time() - cache_file.stat().st_mtime) / 86400
+        # corp_code 매핑은 거의 안 바뀌므로(신규상장 정도) 25일 이내면
+        # 그냥 재사용 — GitHub Actions 캐시(actions/cache, 워크플로 참고)로
+        # 실행 간에도 영속화되므로 평소엔 네트워크 호출 자체가 없다.
+        if not force_refresh and cache_age_days <= 25:
+            import json
+            _corp_code_map_memo = json.loads(cache_file.read_text(encoding="utf-8"))
+            return _corp_code_map_memo
+
+    def _load_stale_cache_fallback(reason: Exception) -> dict[str, str] | None:
+        if cache_file.exists():
+            print(
+                f"[dart_collector] corpCode.xml 갱신 실패, {cache_age_days:.0f}일 지난 "
+                f"캐시로 폴백(corp_code 매핑은 자주 안 바뀌므로 완전 실패보단 나음): {reason}"
+            )
+            import json
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        return None
 
     url = BASE_URL.format("corpCode.xml")
-    resp = requests.get(url, params={"crtfc_key": _api_key()}, timeout=60)
+    last_err: Exception | None = None
+    resp = None
+    # 커넥션 타임아웃(60s 설정에도 실측 250~300초 소요 관측 — DNS/IPv6 폴백
+    # 등 OS 레벨 지연으로 추정)이 원인이라 타임아웃을 (연결10s, 응답30s)로
+    # 짧게 잡고, 대신 2회만 빠르게 재시도한다.
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, params={"crtfc_key": _api_key()}, timeout=(10, 30))
+            break
+        except requests.RequestException as e:
+            last_err = e
+            resp = None
+            if attempt == 0:
+                time.sleep(3)
+
+    if resp is None:
+        fallback = _load_stale_cache_fallback(last_err)
+        if fallback is not None:
+            _corp_code_map_memo = fallback
+            return fallback
+        err = DartApiError(f"corpCode.xml 다운로드 실패(네트워크, 2회 시도): {last_err}")
+        _corp_code_map_memo_error = err
+        raise err
+
     if resp.status_code != 200:
-        raise DartApiError(f"corpCode.xml HTTP 오류 {resp.status_code}: {resp.text[:300]}")
+        e = DartApiError(f"corpCode.xml HTTP 오류 {resp.status_code}: {resp.text[:300]}")
+        fallback = _load_stale_cache_fallback(e)
+        if fallback is not None:
+            _corp_code_map_memo = fallback
+            return fallback
+        _corp_code_map_memo_error = e
+        raise e
 
     content = resp.content
     if not zipfile.is_zipfile(io.BytesIO(content)):
         # 유효한 키가 아니면 ZIP이 아니라 status XML 래퍼가 그대로 옴
-        raise DartApiError(
+        e = DartApiError(
             f"corpCode.xml 응답이 ZIP이 아닙니다(키 오류 가능성): {content[:300]!r}"
         )
+        fallback = _load_stale_cache_fallback(e)
+        if fallback is not None:
+            _corp_code_map_memo = fallback
+            return fallback
+        _corp_code_map_memo_error = e
+        raise e
 
     import xml.etree.ElementTree as ET
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -172,6 +244,8 @@ def download_corp_code_map(force_refresh: bool = False) -> dict[str, str]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     import json
     cache_file.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+    _corp_code_map_memo = mapping
+    _corp_code_map_memo_error = None
     return mapping
 
 

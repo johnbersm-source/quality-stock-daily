@@ -38,6 +38,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 2026-09-29: DART corpCode.xml(전종목 코드 대량다운로드, data/cache/
+      # 에 로컬 캐시됨)이 일시적으로 커넥션 타임아웃을 일으킨 적이 있는데,
+      # GitHub Actions 러너는 매번 새로 체크아웃되는 휘발성 환경이라
+      # data/cache/(.gitignore 대상)가 매일 실행마다 통째로 사라져서 이
+      # 무거운 다운로드를 매일 새로 반복해야 했다 — 매일 실패 위험을 안고
+      # 가는 구조였다. restore는 가장 최근 캐시를 항상 가져오고(있으면),
+      # save는 매 실행마다 새 키로 저장해서 최신 성공본이 계속 누적되게
+      # 한다(dart_collector.py의 download_corp_code_map()이 25일 지난
+      # 캐시만 갱신 시도하므로 평소엔 네트워크 호출 없이 재사용됨).
+      - name: Restore DART corp_code cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: dart-corp-code-map-${{ github.run_id }}
+          restore-keys: |
+            dart-corp-code-map-
+
       - name: Run daily pipeline
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
@@ -50,6 +67,13 @@ jobs:
           # PYTHONUNBUFFERED로 이중 보장.
           PYTHONUNBUFFERED: "1"
         run: python -u src/main.py
+
+      - name: Save DART corp_code cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: dart-corp-code-map-${{ github.run_id }}
 
       - name: Upload generated PDF as artifact (백업/디버깅용)
         if: always()

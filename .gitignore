@@ -3,4 +3,5 @@ __pycache__/
 .env
 data/cache/
 data/output/
+data/tmp_charts/
 *.pdf

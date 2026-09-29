@@ -159,6 +159,11 @@
 {% endfor %}
 </table>
 
+{% if stock.chart_uri %}
+<h3>블록별 득점률</h3>
+<img src="{{ stock.chart_uri }}" width="480" height="208" />
+{% endif %}
+
 <h3>8블록 점수 상세</h3>
 <table class="score-table">
 <tr>

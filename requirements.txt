@@ -6,3 +6,4 @@ xhtml2pdf>=0.2.21
 yfinance>=1.7
 python-dotenv>=1.2
 google-genai>=1.0
+matplotlib>=3.8

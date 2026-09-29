@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -80,12 +82,31 @@ def select_daily_pick(
     excluded = recent_picks(market, as_of, cooldown_days)
     eligible = [c for c in candidates if c["ticker"] not in excluded]
 
+    # 2026-09-29: 850종목 규모 1차 실행이 GitHub Actions 90분 타임아웃에
+    # 걸려 강제취소됐는데, 진행상황 로그가 하나도 안 찍혀서(파이썬 stdout
+    # 완전버퍼링 + 워크플로에 PYTHONUNBUFFERED 미설정) 병목 지점을 전혀
+    # 알 수 없었다. 종목별 소요시간을 즉시 flush해서 어디가 느린지
+    # 실측으로 확인할 수 있게 진행상황 로그를 추가한다.
+    total = len(eligible)
+    loop_start = time.monotonic()
     scored: list[ScoreReport] = []
-    for c in eligible:
+    for i, c in enumerate(eligible, start=1):
+        t0 = time.monotonic()
         try:
             scored.append(score_fn(c))
+            status = "OK"
         except Exception as e:  # noqa: BLE001 - 개별 종목 실패로 전체 파이프라인이 죽으면 안 됨
-            print(f"[selection] {market} {c['ticker']}({c.get('name')}) 채점 실패, 스킵: {e}")
+            status = f"실패: {e}"
+        elapsed = time.monotonic() - t0
+        total_elapsed = time.monotonic() - loop_start
+        avg = total_elapsed / i
+        eta_remaining = avg * (total - i)
+        print(
+            f"[selection] {market} {i}/{total} {c['ticker']}({c.get('name')}) "
+            f"{elapsed:.1f}s [{status}] | 누적 {total_elapsed:.0f}s, "
+            f"평균 {avg:.1f}s/종목, 잔여 예상 {eta_remaining:.0f}s",
+            flush=True,
+        )
 
     scored.sort(key=lambda r: r.total_score, reverse=True)
     gate_passed = [r for r in scored if r.all_gates_passed]

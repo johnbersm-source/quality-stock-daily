@@ -44,7 +44,12 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python src/main.py
+          # 2026-09-29: 1차 850종목 실행이 90분 타임아웃으로 취소됐는데
+          # stdout이 파이프라인 전체가 끝날 때까지 완전버퍼링되어 로그가
+          # 한 줄도 안 찍혀 병목 지점을 못 봤다. -u(unbuffered) + 명시적
+          # PYTHONUNBUFFERED로 이중 보장.
+          PYTHONUNBUFFERED: "1"
+        run: python -u src/main.py
 
       - name: Upload generated PDF as artifact (백업/디버깅용)
         if: always()

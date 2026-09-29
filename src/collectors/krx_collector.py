@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import random
 import time
 from dataclasses import dataclass
 
@@ -83,18 +84,53 @@ def _auth_key() -> str:
     return key
 
 
-def _fetch_day(service: str, bas_dd: str, max_retries: int = 2) -> list[dict]:
+# 2026-09-29: 850종목 규모 실전 실행 3회 중 이 함수가 진짜 병목으로 드러났다.
+# get_ohlcv()/get_index_ohlcv()는 동일한 (service, 날짜) 조합을 "종목마다 각각"
+# 다시 호출한다 — 그런데 _fetch_day()가 반환하는 OutBlock_1은 애초에 그날의
+# "전종목" 데이터라서, KOSPI 종목 200개를 스트레스테스트하면 같은 날짜의 같은
+# 응답을 200번 중복 호출하는 구조였다(스트레스테스트 구간 ~130영업일 기준
+# 종목당 ~260회 → KR 350종목이면 9만회+, 모듈 상단에 문서화된 KRX 일일
+# 10,000건 한도를 훌쩍 넘김). 게다가 3회차 실전 실행 로그에서 7번째 종목
+# 부근부터 HTTP 429가 시작되는 게 실측됐는데, 이전 코드는 429를 재시도 없이
+# 바로 예외로 던졌다.
+# → (service, 날짜) 단위로 프로세스 내 캐시해서 실제 신규 HTTP 호출을
+#   (영업일수 × 서비스수) 수준으로 줄이고(수백 종목이 몇 번이든 재사용),
+#   요청 간 최소 간격(페이싱) + 429 전용 지수 백오프 재시도를 추가한다.
+_day_snapshot_cache: dict[tuple[str, str], list[dict]] = {}
+_MIN_REQUEST_INTERVAL_SEC = 0.4  # 실측 429 발생 구간을 근거로 보수적으로 설정
+_last_request_monotonic = 0.0
+
+
+def _pace_request() -> None:
+    """연속 요청 사이 최소 간격을 보장한다(캐시 히트는 이 함수를 타지 않음)."""
+    global _last_request_monotonic
+    now = time.monotonic()
+    wait = _MIN_REQUEST_INTERVAL_SEC - (now - _last_request_monotonic)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_monotonic = time.monotonic()
+
+
+def _fetch_day(service: str, bas_dd: str, max_retries: int = 5) -> list[dict]:
     """단일 영업일 데이터를 조회한다. KRX Open API는 basDd(YYYYMMDD) 하루 단위로만
     조회 가능하므로, 기간 조회는 상위 함수에서 날짜별로 반복 호출한다.
 
+    (service, bas_dd) 조합이 같으면 프로세스 내에서 캐시를 재사용한다 — 이
+    응답 자체가 그날의 "전종목" 데이터라 종목이 달라도 같은 응답이기 때문.
+
     반환: OutBlock_1 리스트(행 딕셔너리들). 주말/휴장일이면 빈 리스트(정상 상황).
     """
+    cache_key = (service, bas_dd)
+    if cache_key in _day_snapshot_cache:
+        return _day_snapshot_cache[cache_key]
+
     url = BASE_URL.format(service)
     headers = {"AUTH_KEY": _auth_key(), "Accept": "application/json"}
     params = {"basDd": bas_dd}
 
     last_err: Exception | None = None
     for attempt in range(max_retries + 1):
+        _pace_request()
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=15)
         except requests.RequestException as e:
@@ -109,6 +145,16 @@ def _fetch_day(service: str, bas_dd: str, max_retries: int = 2) -> list[dict]:
                 f"'API 이용신청' 승인이 아직 안 된 상태일 수 있습니다. "
                 f"openapi.krx.co.kr 마이페이지에서 해당 서비스 신청 여부를 확인하세요."
             )
+
+        if resp.status_code == 429:
+            last_err = KrxApiError(
+                f"KRX Open API 오류(HTTP 429, Too Many Requests), service={service}, "
+                f"basDd={bas_dd}: {resp.text[:200]}"
+            )
+            backoff = min(2 ** attempt, 30) + random.uniform(0, 1)
+            time.sleep(backoff)
+            continue
+
         if resp.status_code != 200:
             raise KrxApiError(
                 f"KRX Open API 오류(HTTP {resp.status_code}), service={service}, "
@@ -133,9 +179,13 @@ def _fetch_day(service: str, bas_dd: str, max_retries: int = 2) -> list[dict]:
                 f"예상치 못한 응답 구조(OutBlock_1 없음), service={service}, "
                 f"basDd={bas_dd}. raw={str(payload)[:500]}"
             )
+        _day_snapshot_cache[cache_key] = rows
         return rows
 
-    raise KrxApiError(f"네트워크 오류로 {max_retries + 1}회 시도 후 실패: {last_err}")
+    raise KrxApiError(
+        f"429(Too Many Requests) 또는 네트워크 오류로 {max_retries + 1}회 재시도 후 "
+        f"실패, service={service}, basDd={bas_dd}: {last_err}"
+    )
 
 
 def _business_days(start_date: str, end_date: str):

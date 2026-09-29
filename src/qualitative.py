@@ -44,7 +44,20 @@ CACHE_PATH = DATA_DIR / "cache" / "qualitative_cache.json"
 # 거시/사이클은 시황·촉매가 매일 바뀌므로 짧게.
 _TTL_DAYS = {"moat": 90, "ifrs18": 90, "macro": 1}
 
-_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
+
+# 2026-09-29 실측(diagnose_gemini_quota): 결제 계정 미연결 무료 키에서는
+# Google Search grounding이 켜진 호출이 모델을 가리지 않고 전부 429
+# RESOURCE_EXHAUSTED로 막혔다(gemini-3.8-flash 포함). 리오님이 결제 카드
+# 연결을 원치 않는다는 명시적 지시(2026-09-29)에 따라, grounding 없이도
+# 성공이 실측 확인된 gemini-flash-lite-latest를 기본값으로 전환한다.
+# 이 결정의 트레이드오프(정직하게 인지해야 함): 실시간 웹검색 근거 없이
+# 모델의 학습 지식만으로 채점하므로, evidence는 "지금 이 순간의 사실"이
+# 아니라 "모델 학습 시점까지 알려진 사실"일 수 있다 — 그래서 아래 각
+# 루브릭 프롬프트에 이 사실을 명시해 결과에도 투명하게 남기고, 매크로처럼
+# 최신성이 특히 중요한 항목은 이 한계가 더 크다는 점을 evidence에 모델이
+# 스스로 명시하도록 요구한다.
+_USE_GROUNDING_DEFAULT = os.environ.get("GEMINI_USE_GROUNDING", "0") == "1"
 
 
 class QualitativeResearchError(Exception):
@@ -101,7 +114,7 @@ def _client():
     return genai.Client(api_key=key)
 
 
-def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool = True) -> dict:
+def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool | None = None) -> dict:
     """Gemini를 호출해 JSON 응답을 파싱한다. 실패 시 QualitativeResearchError를
     던진다(호출부에서 잡아 None 처리).
 
@@ -111,6 +124,9 @@ def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool
     텍스트 생성만 시도하면 무료 티어에서도 되는지 diagnose_gemini_quota()로
     조합별로 실측 확인한다 — 이 함수 자체는 두 모드 다 지원하도록 파라미터화."""
     from google.genai import types
+
+    if use_grounding is None:
+        use_grounding = _USE_GROUNDING_DEFAULT
 
     client = _client()
     tools = [types.Tool(google_search=types.GoogleSearch())] if use_grounding else None
@@ -200,8 +216,18 @@ def _build_qual_score(parsed: dict, max_points: float, component_label: str) -> 
 
 # --- A블록: 경제적 해자 (8점) ---
 
+_NO_GROUNDING_NOTICE = """**중요(모드 안내)**: 이 호출에는 실시간 Google 검색 도구가 연결되어
+있지 않습니다. 당신의 학습(훈련) 데이터에 들어있는 지식만으로 판단하세요.
+학습 시점 이후에 일어났을 수 있는 변화(최신 실적, 최근 뉴스, 규제 변경 등)는
+알 수 없다는 점을 스스로 인지하고, 확신이 없는 부분은 점수를 보수적으로
+낮추세요. evidence 문장 끝에 반드시 "(실시간 검색 아님, 학습 지식 기반)"이라는
+표현을 포함해 이 한계를 명시하세요."""
+
+
 _MOAT_RUBRIC = """당신은 가치투자 애널리스트입니다. 다음 기업의 경제적 해자(economic moat)를
-Google 검색으로 최신 사실을 확인한 뒤 0~{max_points}점으로 채점하세요.
+0~{max_points}점으로 채점하세요.
+
+{grounding_notice}
 
 기업: {company_name} ({ticker}, {market} 시장)
 
@@ -214,8 +240,8 @@ Google 검색으로 최신 사실을 확인한 뒤 0~{max_points}점으로 채�
 - {mid_low}점 내외: 약하거나 일시적인 해자, 경쟁 심화 신호가 뚜렷함.
 - 0~1점: 커머디티 성격이 강하고 뚜렷한 해자 근거를 찾지 못함.
 
-반드시 실제 검색 결과(시장점유율, 마진 비교, 가격결정력 사례, 최근 실적/공시 등)에
-근거해서 판단하고, 근거 없는 추측은 하지 마세요. 확실한 근거를 찾지 못했다면
+가능한 한 구체적 사실(시장점유율, 마진 비교, 가격결정력 사례, 실적/공시 등)에
+근거해서 판단하고, 근거 없는 추측은 하지 마세요. 확실한 근거가 부족하다면
 낮은 점수를 주고 그 사실을 evidence에 명시하세요.
 
 아래 JSON 형식으로만 답하세요(다른 텍스트 없이):
@@ -229,6 +255,7 @@ def research_moat(ticker: str, company_name: str, market: str, as_of: dt.date) -
         return QualitativeScore(points_awarded=cached["points"], max_points=8, evidence=cached["evidence"])
     prompt = _MOAT_RUBRIC.format(
         max_points=8, mid_high=6, mid_low=3, company_name=company_name, ticker=ticker, market=market,
+        grounding_notice=_NO_GROUNDING_NOTICE if not _USE_GROUNDING_DEFAULT else "",
     )
     try:
         parsed = _call_gemini_json(prompt)
@@ -244,7 +271,13 @@ def research_moat(ticker: str, company_name: str, market: str, as_of: dt.date) -
 
 _MACRO_RUBRIC = """당신은 매크로 애널리스트입니다. 다음 기업이 속한 섹터가 현재({as_of} 기준)
 거시경제 사이클에서 받는 영향과, 향후 1~2분기 내 임박한 촉매(실적, 정책, 업황
-전환 등)를 Google 검색으로 최신 정보를 확인한 뒤 0~{max_points}점으로 채점하세요.
+전환 등)를 0~{max_points}점으로 채점하세요.
+
+{grounding_notice}
+**추가 유의**: 이 항목(거시·사이클·재료)은 특히 최신성이 중요합니다. 실시간
+검색 없이 학습 지식만으로 답하는 경우, 당신이 아는 가장 최근 상황이 실제
+{as_of} 시점과 다를 수 있다는 점을 evidence에 반드시 함께 명시하고, 확신이
+낮으면 중간 점수({mid_high}점 내외) 이하로 보수적으로 채점하세요.
 
 기업: {company_name} ({ticker}, {market} 시장)
 
@@ -257,7 +290,7 @@ _MACRO_RUBRIC = """당신은 매크로 애널리스트입니다. 다음 기업�
 - 0~1점: 뚜렷한 역풍(업황 다운사이클, 규제 리스크, 수요 둔화) 또는 임박한
   부정적 촉매.
 
-실제 최신 뉴스·데이터에 근거해서 판단하고, 추측하지 마세요.
+가능한 한 구체적 사실·데이터에 근거해서 판단하고, 근거 없는 추측은 하지 마세요.
 
 아래 JSON 형식으로만 답하세요(다른 텍스트 없이):
 {{"points": <0~{max_points} 사이 숫자>, "evidence": "<채점 근거를 한국어 2~4문장으로,
@@ -273,6 +306,7 @@ def research_macro_catalyst(
     prompt = _MACRO_RUBRIC.format(
         max_points=8, mid_high=6, mid_low=3,
         company_name=company_name, ticker=ticker, market=market, as_of=as_of.isoformat(),
+        grounding_notice=_NO_GROUNDING_NOTICE if not _USE_GROUNDING_DEFAULT else "",
     )
     try:
         parsed = _call_gemini_json(prompt)
@@ -289,7 +323,12 @@ def research_macro_catalyst(
 _IFRS18_RUBRIC = """다음 기업의 최근 연차보고서/사업보고서/10-K에서 사업 부문별(segment)
 분리공시를 하고 있는지, 그리고 IFRS 18(2027-01-01 의무 시행, 조기적용 가능,
 Management-defined Performance Measures 공식화 요구)을 조기적용했거나 도입 계획을
-공식 발표한 근거가 있는지 Google 검색으로 확인하세요.
+공식 발표한 근거가 있는지 답하세요.
+
+{grounding_notice}
+확실한 근거가 없으면(특히 실시간 검색 없이 학습 지식만으로 확인이 안 되면)
+반드시 false/null로 답하세요 — 불확실할 때 true로 답하는 것보다 모른다고
+답하는 편이 훨씬 안전합니다.
 
 기업: {company_name} ({ticker}, {market} 시장)
 
@@ -321,7 +360,10 @@ def research_ifrs18(
             )
         return cached.get("segment_disclosed"), mpm
 
-    prompt = _IFRS18_RUBRIC.format(company_name=company_name, ticker=ticker, market=market)
+    prompt = _IFRS18_RUBRIC.format(
+        company_name=company_name, ticker=ticker, market=market,
+        grounding_notice=_NO_GROUNDING_NOTICE if not _USE_GROUNDING_DEFAULT else "",
+    )
     try:
         parsed = _call_gemini_json(prompt)
     except QualitativeResearchError as e:

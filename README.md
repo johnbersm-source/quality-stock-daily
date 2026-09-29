@@ -109,32 +109,43 @@ run id 36556135779)한 결과:
    실패(위 리스크 섹션 참고). 재시도 예산을 늘려뒀고, **다음 실제 스케줄
    실행에서 KR이 정상 동작하는지 재확인 필요** (남은 검증 과제로 유지).
 6. ~~정성평가 3항목(경제적 해자·IFRS18 MPM·거시/사이클, 총 17.5/100점) 보강~~
-   **구현 완료, Gemini 실호출은 미검증 (2026-09-29)** — `src/qualitative.py`
-   신설: Gemini API(Google Search grounding)로 실제 리서치해서 채점, 근거
-   없는 점수는 자체 거부, 실패 시 N/A로 안전하게 폴백. 850종목 전체가 아닌
-   정량 상위 N종목(`pipeline.yaml selection.qualitative_top_n`, 기본 20)에만
-   적용하는 2단계 채점 구조(`selection.py`)까지 구현·`test-qualitative.yml`
-   진단 워크플로로 실행 확인. **다만 실제 Gemini 응답을 받는 데는 아직
-   성공 못 함** — 진단 실행에서 6건 호출 전부 `429 RESOURCE_EXHAUSTED`(무료
-   티어 쿼터 초과)로 실패, 코드는 설계대로 안전하게 N/A 처리함(크래시 없음,
-   거짓 점수 생성 없음 — 안전장치는 검증됨). IFRS18 발효일(2027-01-01,
-   조기적용 가능, IFRS 전용이라 US GAAP 종목엔 미적용)도 웹서치로 확인해
-   코드·리포트 각주에 반영함.
+   **구현 완료 — grounding 없이 gemini-flash-lite-latest로 전환, 재검증 대기
+   (2026-09-29)**. `src/qualitative.py` 신설: Gemini API로 실제 리서치해서
+   채점, 근거 없는 점수는 자체 거부, 실패 시 N/A로 안전하게 폴백. 850종목
+   전체가 아닌 정량 상위 N종목(`pipeline.yaml selection.qualitative_top_n`,
+   기본 20)에만 적용하는 2단계 채점 구조(`selection.py`)까지 구현·
+   `test-qualitative.yml` 진단 워크플로로 실행 확인. IFRS18 발효일
+   (2027-01-01, 조기적용 가능, IFRS 전용이라 US GAAP 종목엔 미적용)도
+   웹서치로 확인해 코드·리포트 각주에 반영함.
 
-   **원인 재진단(2026-09-29)**: 처음엔 jggt-pipeline 등 다른 프로젝트와의
-   쿼터 공유를 의심해 이 프로젝트 전용 새 Google Cloud 프로젝트에서 새
-   API 키를 발급·등록했으나, **새 키로도 동일하게 6건 전부 429**가 나서
-   그 가설은 기각됨. 웹서치로 확인한 더 유력한 원인: Google이 최근 무료
-   API 키를 "결제 계정 미연결 프로젝트=Free Tier(쿼터 0에 가까움)" vs
-   "결제 계정 연결 프로젝트=Free Usage Allowance(사실상 무료 한도 내
-   충분히 사용 가능)"로 구분하고 있어, **결제 카드를 연결하지 않은 신규
-   프로젝트는 최신 모델(gemini-3.x 등)에서 쿼터가 사실상 0으로 잡히는
-   사례가 다수 보고됨**(Google AI 개발자 포럼 다수 확인). 무료 사용
-   한도 내에서는 과금되지 않는다고 안내됨. 공식 Rate Limits 문서 자체엔
-   이 수치가 명시돼 있지 않아 단정할 순 없음 — **다음 확인 필요**: Google
-   AI Studio(aistudio.google.com) 우측 상단 "Rate limits/Usage" 또는
-   Google Cloud Console → 결제(Billing)에서 이 키의 실제 티어·쿼터를
-   직접 확인하고, 결제 계정 연결(무료 한도 내 무과금) 후 재검증.
+   **Gemini 쿼터 문제 원인 확정 및 해결(2026-09-29)**: 결제 카드를 연결하지
+   않은 무료 키(원 키·이 프로젝트 전용 새 키 모두 동일)로 Google Search
+   grounding을 켠 호출은 예외 없이 `429 RESOURCE_EXHAUSTED`. 리오님이
+   **"결제 카드 연결이 안 됨, 다른 방법을 구상"**이라고 명시해 카드 연결
+   경로는 배제하고, `diagnose_gemini_quota()`로 (모델×grounding) 7개 조합을
+   전부 실측:
+
+   | 모델 | grounding | 결과 |
+   |---|---|---|
+   | gemini-3.8-flash | ON | 429 (쿼터 초과) |
+   | gemini-3.8-flash | OFF | 503 (일시적 서버 과부하, 쿼터 문제 아님) |
+   | gemini-2.5-flash | ON/OFF | 404 (모델 단종, 3.8-flash로 리다이렉트) |
+   | gemini-2.0-flash | ON/OFF | 404 (모델 단종) |
+   | **gemini-flash-lite-latest** | **OFF** | **성공** |
+
+   → grounding(실시간 Google 검색)이 켜진 호출은 모델을 가리지 않고 전부
+   막혀 있고, **grounding을 끄면 결제 미연결 무료 키로도 정상 동작**한다는
+   것을 확인. 이에 따라 `qualitative.py` 기본값을
+   `gemini-flash-lite-latest` + `use_grounding=False`로 전환(커밋 예정).
+   **트레이드오프(정직하게 기록)**: 실시간 웹검색 근거 없이 모델의 학습
+   지식만으로 채점하므로, evidence가 "지금 이 순간의 사실"이 아니라
+   "모델 학습 시점까지 알려진 사실"일 수 있음 — 세 루브릭 프롬프트 모두에
+   이 사실을 명시하고, evidence 문장에 "(실시간 검색 아님, 학습 지식 기반)"을
+   포함하도록 강제했으며, 최신성이 특히 중요한 거시/사이클 항목은 불확실
+   시 보수적으로 낮은 점수를 주도록 지시함. `GEMINI_USE_GROUNDING=1`
+   환경변수로 나중에 결제 계정을 연결하면 언제든 grounding 모드로 되돌릴
+   수 있게 스위치를 남겨둠. `test-qualitative.yml` 재실행으로 실제 채점
+   결과(점수+근거)가 정상적으로 나오는지 최종 검증 필요.
 7. **PDF 원본(실전경제학 리서치 Vol.1) 10항목 vs v3 8블록 비교 섹션** —
    2026-09-29 리오님이 리포트를 보고 이 항목이 없다고 지적. 원본 PDF가
    저장소/세션 어디에도 남아있지 않아 착수 못 함 — 원본 PDF 재첨부 필요.

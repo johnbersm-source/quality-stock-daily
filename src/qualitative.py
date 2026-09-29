@@ -101,20 +101,26 @@ def _client():
     return genai.Client(api_key=key)
 
 
-def _call_gemini_json(prompt: str) -> dict:
-    """Google Search grounding을 켜고 Gemini를 호출해 JSON 응답을 파싱한다.
-    실패 시 QualitativeResearchError를 던진다(호출부에서 잡아 None 처리)."""
+def _call_gemini_json(prompt: str, model: str | None = None, use_grounding: bool = True) -> dict:
+    """Gemini를 호출해 JSON 응답을 파싱한다. 실패 시 QualitativeResearchError를
+    던진다(호출부에서 잡아 None 처리).
+
+    2026-09-29: 무료 API 키(결제 계정 미연결)로 Google Search grounding을
+    켜면 429 RESOURCE_EXHAUSTED가 발생하는 게 실측 확인됐다(리오님이 결제
+    카드 연결을 원치 않아 이 경로를 그대로 씀). use_grounding=False로 순수
+    텍스트 생성만 시도하면 무료 티어에서도 되는지 diagnose_gemini_quota()로
+    조합별로 실측 확인한다 — 이 함수 자체는 두 모드 다 지원하도록 파라미터화."""
     from google.genai import types
 
     client = _client()
-    grounding_tool = types.Tool(google_search=types.GoogleSearch())
+    tools = [types.Tool(google_search=types.GoogleSearch())] if use_grounding else None
     config = types.GenerateContentConfig(
-        tools=[grounding_tool],
+        tools=tools,
         temperature=0.1,  # 채점 일관성 우선 — 창의성 불필요
     )
     try:
         response = client.models.generate_content(
-            model=_MODEL_NAME, contents=prompt, config=config,
+            model=model or _MODEL_NAME, contents=prompt, config=config,
         )
     except Exception as e:  # noqa: BLE001 - Gemini SDK 예외 타입이 다양해 광범위하게 잡음
         raise QualitativeResearchError(f"Gemini 호출 실패: {e}") from e
@@ -143,6 +149,38 @@ def _call_gemini_json(prompt: str) -> dict:
     if sources:
         parsed["_sources"] = sources[:5]
     return parsed
+
+
+def diagnose_gemini_quota() -> list[dict]:
+    """2026-09-29 신설: 리오님이 결제 카드 연결을 원치 않아, 어떤 (모델, grounding
+    여부) 조합이 결제 계정 미연결 무료 키로도 실제 동작하는지 최소 비용(짧은
+    프롬프트, JSON 아님)으로 경험적으로 확인한다. Google Search grounding이
+    결제 계정 없이는 아예 막혀 있고 순수 텍스트 생성은 된다는 보고가 있어
+    (README 참고), 그 가설을 실측으로 검증하기 위한 진단 전용 함수."""
+    from google.genai import types
+
+    combos = [
+        ("gemini-3.8-flash", True),
+        ("gemini-3.8-flash", False),
+        ("gemini-2.5-flash", True),
+        ("gemini-2.5-flash", False),
+        ("gemini-2.0-flash", True),
+        ("gemini-2.0-flash", False),
+        ("gemini-flash-lite-latest", False),
+    ]
+    client = _client()
+    results = []
+    for model, grounding in combos:
+        tools = [types.Tool(google_search=types.GoogleSearch())] if grounding else None
+        config = types.GenerateContentConfig(tools=tools, temperature=0.1)
+        try:
+            response = client.models.generate_content(
+                model=model, contents="한 단어로만 답하세요: OK", config=config,
+            )
+            results.append({"model": model, "grounding": grounding, "ok": True, "text": (response.text or "")[:50]})
+        except Exception as e:  # noqa: BLE001
+            results.append({"model": model, "grounding": grounding, "ok": False, "error": str(e)[:200]})
+    return results
 
 
 def _build_qual_score(parsed: dict, max_points: float, component_label: str) -> QualitativeScore:

@@ -705,6 +705,10 @@ if __name__ == "__main__":
         "--diagnose-qualitative", action="store_true",
         help="삼성전자+Microsoft 2종목으로 정성평가(qualitative.py, GEMINI_API_KEY 필요) 연동만 점검",
     )
+    parser.add_argument(
+        "--diagnose-gemini-quota", action="store_true",
+        help="어떤 (모델, Google Search grounding 여부) 조합이 결제 미연결 무료 키로 동작하는지 점검",
+    )
     args = parser.parse_args()
 
     target_date = dt.date.fromisoformat(args.date) if args.date else dt.date.today()
@@ -713,5 +717,8 @@ if __name__ == "__main__":
         _diagnose_kr_report(target_date)
     elif args.diagnose_qualitative:
         _diagnose_qualitative(target_date)
+    elif args.diagnose_gemini_quota:
+        import json
+        print(json.dumps(qualitative.diagnose_gemini_quota(), ensure_ascii=False, indent=2))
     else:
         run_daily(as_of=target_date, dry_run=args.dry_run)

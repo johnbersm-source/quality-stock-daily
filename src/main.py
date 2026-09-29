@@ -471,6 +471,10 @@ def _report_missing_pick(result: SelectionResult) -> str:
     return "\n".join(lines)
 
 
+def _empty_selection_result(market: str, reason: str) -> SelectionResult:
+    return SelectionResult(market=market, picked=None, reference_top3=[], reason=reason)
+
+
 def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | None:
     as_of = as_of or dt.date.today()
     cfg = _load_pipeline_config()
@@ -479,24 +483,60 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
     universe_cfg = cfg.get("universe", {})
     kr_cfg = universe_cfg.get("kr", {})
 
-    kr_candidates = universe.get_kr_candidates(
-        as_of,
-        top_n_kospi=kr_cfg.get("top_n_kospi", 200),
-        top_n_kosdaq=kr_cfg.get("top_n_kosdaq", 150),
-    )
-    us_candidates = universe.get_us_candidates()
-    print(f"[{as_of.isoformat()}] 후보군 생성 완료: KR {len(kr_candidates)}개, US {len(us_candidates)}개")
+    # 2026-09-29: KR 후보군 생성(get_kr_candidates → KRX 전종목 스냅샷 조회)
+    # 자체가 KrxApiError로 죽은 적이 실전에서 실제로 발생했는데(KRX 429),
+    # 이게 try/except 없이 그대로 전파되면 이미 정상 동작하는 US 쪽까지
+    # 통째로 죽어서 "한국 1 + 미국 1" 중 아무것도 못 보내는 사고가 난다.
+    # KR/US를 서로 독립적으로 격리해서, 한쪽이 완전히 죽어도 다른 쪽은
+    # 정상적으로 픽을 만들어 전송할 수 있게 한다(사용자 표준 원칙: 없는
+    # 데이터를 지어내진 않되, 한쪽의 실패가 다른 쪽 성공까지 막아선 안 됨).
+    try:
+        kr_candidates = universe.get_kr_candidates(
+            as_of,
+            top_n_kospi=kr_cfg.get("top_n_kospi", 200),
+            top_n_kosdaq=kr_cfg.get("top_n_kosdaq", 150),
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[{as_of.isoformat()}] KR 후보군 생성 실패(KR 전체 스킵, US는 계속 진행): {e}")
+        kr_candidates = None
 
-    kr_result = select_daily_pick(
-        "KR", kr_candidates,
-        score_fn=lambda c: build_kr_report(c, as_of),
-        as_of=as_of, cooldown_days=cooldown_days,
+    try:
+        us_candidates = universe.get_us_candidates()
+    except Exception as e:  # noqa: BLE001
+        print(f"[{as_of.isoformat()}] US 후보군 생성 실패(US 전체 스킵, KR은 계속 진행): {e}")
+        us_candidates = None
+
+    print(
+        f"[{as_of.isoformat()}] 후보군 생성 완료: "
+        f"KR {len(kr_candidates) if kr_candidates is not None else '실패'}개, "
+        f"US {len(us_candidates) if us_candidates is not None else '실패'}개"
     )
-    us_result = select_daily_pick(
-        "US", us_candidates,
-        score_fn=lambda c: build_us_report(c, as_of),
-        as_of=as_of, cooldown_days=cooldown_days,
-    )
+
+    if kr_candidates is not None:
+        try:
+            kr_result = select_daily_pick(
+                "KR", kr_candidates,
+                score_fn=lambda c: build_kr_report(c, as_of),
+                as_of=as_of, cooldown_days=cooldown_days,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[{as_of.isoformat()}] KR 채점 단계 실패(KR 전체 스킵, US는 계속 진행): {e}")
+            kr_result = _empty_selection_result("KR", f"KR 채점 단계 실패: {e}")
+    else:
+        kr_result = _empty_selection_result("KR", "KR 후보군 생성 실패로 채점 자체를 시도하지 못함")
+
+    if us_candidates is not None:
+        try:
+            us_result = select_daily_pick(
+                "US", us_candidates,
+                score_fn=lambda c: build_us_report(c, as_of),
+                as_of=as_of, cooldown_days=cooldown_days,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[{as_of.isoformat()}] US 채점 단계 실패(US 전체 스킵, KR은 계속 진행): {e}")
+            us_result = _empty_selection_result("US", f"US 채점 단계 실패: {e}")
+    else:
+        us_result = _empty_selection_result("US", "US 후보군 생성 실패로 채점 자체를 시도하지 못함")
 
     print(f"[{as_of.isoformat()}] {kr_result.reason}")
     print(f"[{as_of.isoformat()}] {us_result.reason}")

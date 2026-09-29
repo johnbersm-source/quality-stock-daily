@@ -17,6 +17,20 @@ data.krx.co.kr 크롤링 방식(pykrx 내부 동작 방식)에 로그인을 의�
    승인되지 않은 것이므로 openapi.krx.co.kr 마이페이지에서 개별 신청 필요.
 4. 비상업적 이용 기준 무료, 1일 10,000건 호출 제한.
 
+=== 2026-09-29 850종목 규모 1차 daily-report.yml 실전 실행 관찰 ===
+get_kr_candidates()가 그날 처음으로 날리는 sto/stk_bydd_trd 호출부터 곧바로
+HTTP 429가 발생, 6회 재시도(당시 max_retries=5, 지수백오프 cap 30초) 후에도
+계속 429 → KR 전체가 후보군 생성 단계에서 스킵됨(US는 정상 진행, 503개
+채점 완료·9분 만에 종료). 같은 날 앞서 여러 진단 워크플로(test-krx-key,
+test-dart-kr 3회+)가 같은 AUTH_KEY로 KRX API를 반복 호출한 뒤였다는 점이
+누적 원인일 가능성이 높지만, 일일 10,000건 한도 자체를 넘었다고 보기엔
+그날 총 호출량이 그보다 훨씬 적어 단정할 근거는 없음(추측 금지 원칙상
+"확실한 원인"으로 기록하지 않음) — 실제 매일 스케줄 실행(하루 첫 호출)에서도
+재현되는지 다음 실행으로 재확인 필요. 우선 재시도 예산을 늘려뒀다
+(max_retries 5→8, backoff cap 30→45초, jitter 확대) — 이걸로도 안 풀리면
+KRX 측 레이트리밋이 더 엄격하다는 뜻이므로 사전 스크리닝(후보 수 축소) 등
+추가 대응이 필요하다.
+
 === 검증 상태 (2026-09-28) ===
 - 엔드포인트 リ처빌리티: curl로 직접 확인 완료 — 잘못된 키로 요청 시
   HTTP 401 + {"respMsg":"Unauthorized Key","respCode":"401"} 정상 응답 확인.
@@ -111,7 +125,7 @@ def _pace_request() -> None:
     _last_request_monotonic = time.monotonic()
 
 
-def _fetch_day(service: str, bas_dd: str, max_retries: int = 5) -> list[dict]:
+def _fetch_day(service: str, bas_dd: str, max_retries: int = 8) -> list[dict]:
     """단일 영업일 데이터를 조회한다. KRX Open API는 basDd(YYYYMMDD) 하루 단위로만
     조회 가능하므로, 기간 조회는 상위 함수에서 날짜별로 반복 호출한다.
 
@@ -151,7 +165,7 @@ def _fetch_day(service: str, bas_dd: str, max_retries: int = 5) -> list[dict]:
                 f"KRX Open API 오류(HTTP 429, Too Many Requests), service={service}, "
                 f"basDd={bas_dd}: {resp.text[:200]}"
             )
-            backoff = min(2 ** attempt, 30) + random.uniform(0, 1)
+            backoff = min(2 ** attempt, 45) + random.uniform(0, 2)
             time.sleep(backoff)
             continue
 

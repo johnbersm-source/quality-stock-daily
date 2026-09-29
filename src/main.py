@@ -565,7 +565,14 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
             "all_gates_passed": report.all_gates_passed,
             "final_grade": report.final_grade,
             "blocks": [
-                {"key": b.block_key, "name": b.name, "points_awarded": b.points_awarded, "max_points": b.max_points}
+                {
+                    "key": b.block_key, "name": b.name,
+                    "points_awarded": b.points_awarded, "max_points": b.max_points,
+                    "components": [
+                        {"name": c.name, "points_awarded": c.points_awarded, "max_points": c.max_points, "note": c.note}
+                        for c in b.components
+                    ],
+                }
                 for b in report.blocks
             ],
             "gates": [

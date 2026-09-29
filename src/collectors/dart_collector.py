@@ -244,9 +244,14 @@ def get_dividend_info(corp_code: str, bsns_year: str, reprt_code: str = REPRT_AN
 
 
 def get_treasury_stock(corp_code: str, bsns_year: str, reprt_code: str = REPRT_ANNUAL) -> list[dict]:
-    """자기주식 취득 및 처분 현황(tesstkAcqusDspsSttus.json) — 자사주 매입/소각."""
+    """자기주식 취득 및 처분 현황(tesstkAcqsDspsSttus.json) — 자사주 매입/소각.
+
+    2026-09-29 실측 중 발견: 엔드포인트명에 오타("tesstkAcqusDspsSttus" — Acqus)가
+    있어 DART가 status=101(잘못된 URL) 오류를 냈다. 공식 개발가이드
+    (opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS002&apiId=2019006)로 정확한
+    이름("tesstkAcqsDspsSttus" — Acqs)을 확인해 수정."""
     payload = _get_json(
-        "tesstkAcqusDspsSttus.json",
+        "tesstkAcqsDspsSttus.json",
         {"corp_code": corp_code, "bsns_year": bsns_year, "reprt_code": reprt_code},
     )
     return payload.get("list", [])

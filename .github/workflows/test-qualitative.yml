@@ -1,0 +1,42 @@
+name: Test Qualitative Scoring (진단용, 수동 실행)
+
+# 2026-09-29 신설: 정성평가 3항목(경제적 해자·IFRS18 MPM·거시/사이클,
+# src/qualitative.py, Gemini API + Google Search grounding)이 실제로
+# 동작하는지 삼성전자(KR) + Microsoft(US) 2종목만으로 가볍게 확인하는
+# 전용 워크플로. 850종목 전체를 도는 daily-report.yml을 돌리지 않고도
+# 모바일에서 "Run workflow" 한 번으로 Gemini 연동을 점검할 수 있게 했다.
+# KRX_AUTH_KEY(KR 스트레스테스트에 필요)·GEMINI_API_KEY 필요, DART/TELEGRAM
+# 관련 Secrets는 KR 재무데이터/전송 없이도 이 진단엔 필요(DART_API_KEY는
+# build_kr_report 전체가 도니 필요, TELEGRAM은 전송 없이 콘솔 출력만 하므로
+# 불필요).
+#
+# 사용법(모바일 포함): 저장소 Actions 탭 → 왼쪽 목록에서
+# "Test Qualitative Scoring" 선택 → "Run workflow" 버튼 → 실행 로그 확인.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-qualitative:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 정성평가 진단 (삼성전자 + Microsoft)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: python -u -m src.main --diagnose-qualitative

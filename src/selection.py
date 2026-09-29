@@ -75,10 +75,21 @@ def select_daily_pick(
     score_fn: Callable[[dict], ScoreReport],
     as_of: dt.date,
     cooldown_days: int = 10,
+    qualitative_score_fn: Callable[[dict], ScoreReport] | None = None,
+    qualitative_top_n: int = 20,
 ) -> SelectionResult:
     """candidates: src/universe.py의 get_kr_candidates()/get_us_candidates() 반환값.
     score_fn: 후보 dict(ticker/name/market 등)를 받아 ScoreReport를 반환하는 함수
-    (실제로는 collector 호출 + scorecard.compute_score를 감싼 wrapper가 들어감)."""
+    (실제로는 collector 호출 + scorecard.compute_score를 감싼 wrapper가 들어감).
+
+    2026-09-29 2단계 채점 추가(리오님 지시 — 정성평가는 정량 상위 N종목에만
+    적용): score_fn은 항상 정량 데이터만으로 850종목 전체를 1차 채점한다
+    (기존과 동일, 정성평가 3항목은 N/A). qualitative_score_fn이 주어지면,
+    1차 정량 총점 상위 qualitative_top_n개만 골라 Gemini 리서치로 정성평가
+    (경제적 해자·IFRS18 MPM·거시)까지 채운 뒤 재채점하고, 그 결과로 최종
+    랭킹·게이트 판정을 다시 계산한다. 나머지 (N-850)개는 정량 점수 그대로
+    유지 — 어차피 순위권 밖이라 정성평가로도 뒤집힐 가능성이 낮고, 850종목
+    전체에 매일 Gemini를 돌리는 건 API 호출량·시간상 비현실적이라는 판단."""
     excluded = recent_picks(market, as_of, cooldown_days)
     eligible = [c for c in candidates if c["ticker"] not in excluded]
 
@@ -109,6 +120,36 @@ def select_daily_pick(
         )
 
     scored.sort(key=lambda r: r.total_score, reverse=True)
+
+    if qualitative_score_fn is not None and scored:
+        candidates_by_ticker = {c["ticker"]: c for c in eligible}
+        top_n = scored[:qualitative_top_n]
+        print(
+            f"[selection] {market} 정성평가 2단계: 정량 상위 {len(top_n)}개 재채점 시작"
+            f"(Gemini 리서치, 종목당 수십 초 소요될 수 있음)",
+            flush=True,
+        )
+        requalified: list[ScoreReport] = []
+        for i, r in enumerate(top_n, start=1):
+            c = candidates_by_ticker.get(r.ticker)
+            if c is None:
+                requalified.append(r)
+                continue
+            t0 = time.monotonic()
+            try:
+                new_report = qualitative_score_fn(c)
+                requalified.append(new_report)
+                status = "OK"
+            except Exception as e:  # noqa: BLE001 - 정성평가 실패로 정량 결과까지 잃으면 안 됨
+                requalified.append(r)  # 실패 시 정량 결과라도 그대로 유지
+                status = f"정성평가 실패(정량 결과 유지): {e}"
+            print(
+                f"[selection] {market} 정성평가 {i}/{len(top_n)} {r.ticker}({r.company_name}) "
+                f"{time.monotonic() - t0:.1f}s [{status}]", flush=True,
+            )
+        scored = requalified + scored[qualitative_top_n:]
+        scored.sort(key=lambda r: r.total_score, reverse=True)
+
     gate_passed = [r for r in scored if r.all_gates_passed]
 
     if gate_passed:

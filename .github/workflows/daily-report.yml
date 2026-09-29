@@ -61,6 +61,10 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 2026-09-29: 정성평가(경제적 해자·IFRS18 MPM·거시, src/qualitative.py)용
+          # Gemini API 키. 없으면 main.py가 이 단계를 자동으로 스킵하고 정량
+          # 채점만 진행(파이프라인이 죽지는 않음).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # 2026-09-29: 1차 850종목 실행이 90분 타임아웃으로 취소됐는데
           # stdout이 파이프라인 전체가 끝날 때까지 완전버퍼링되어 로그가
           # 한 줄도 안 찍혀 병목 지점을 못 봤다. -u(unbuffered) + 명시적

@@ -20,6 +20,8 @@
 selection:
   cooldown_days: 10          # 최근 N일 내 픽 나온 종목은 후보에서 제외(달력일 기준, 영업일 아님 — 단순화)
   min_gate_pass_required: true  # true = 게이트 미통과 종목은 아예 픽 후보에서 배제
+  qualitative_top_n: 20      # 2026-09-29 추가: 정성평가(해자·IFRS18 MPM·거시, src/qualitative.py)는
+                             # 정량 상위 N종목에만 적용(850종목 전체는 API 호출량·시간상 비현실적 — 리오님 지시)
 
 universe:
   kr:

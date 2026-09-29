@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 
@@ -34,7 +35,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import universe
+from src import qualitative, universe
 from src.collectors import dart_collector, krx_collector, us_collector
 from src.notify.telegram_notifier import TelegramNotifyError, send_pdf_report
 from src.report.pdf_generator import StockReportEntry, generate_pdf
@@ -72,7 +73,7 @@ def _dart_account(rows: list[dict], sj_div: str, keywords: list[str], amount_key
     return None
 
 
-def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
+def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = False) -> ScoreReport:
     """KR 후보 1개를 krx_collector(KRX Open API) + dart_collector(OpenDART)로
     채운 RawFinancials로 채점한다.
 
@@ -90,8 +91,11 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
        아직 미구현(차입금 관련 CF 계정 여러 개의 부호 처리를 확정 못해 보류,
        정직하게 None으로 남김 — Shareholder Yield 컴포넌트는 나머지 두
        요소만으로도 부분 계산됨).
-    정성 항목(해자/IFRS18/거시)은 US와 동일하게 자동으로 채우지 않고 N/A로
-    남긴다(리서치가 필요한 작업이라 이 함수가 지어낼 수 없음).
+    정성 항목(해자/IFRS18/거시)은 with_qualitative=True일 때만 qualitative.py를
+    통해 Gemini(Google Search grounding)로 실제 리서치해서 채운다(2026-09-29
+    보강) — 기본값 False에서는 여전히 N/A로 둔다. 850종목 전체에 매일 돌리면
+    비용·시간이 비현실적이라 select_daily_pick()의 2단계(정량 1차 채점 →
+    상위 N만 정성 보강 재채점) 구조에서만 True로 호출되는 게 정상 사용법.
     """
     ticker = candidate["ticker"]
     market = candidate.get("market", "KOSPI")
@@ -281,6 +285,14 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
             "reason": mos.reason,
         }
 
+    moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
+    if with_qualitative:
+        moat_qual = qualitative.research_moat(ticker, candidate["name"], "KR", as_of)
+        ifrs18_segment_disclosed, ifrs18_mpm_qual = qualitative.research_ifrs18(
+            ticker, candidate["name"], "KR", as_of
+        )
+        macro_qual = qualitative.research_macro_catalyst(ticker, candidate["name"], "KR", as_of)
+
     data = RawFinancials(
         ticker=ticker, company_name=candidate["name"], market="KR", as_of_date=as_of.isoformat(),
         roe_5y_pct=roe_series,
@@ -288,12 +300,12 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         roic_pct=roic_pct,
         wacc_pct=wacc_pct,
         wacc_assumptions_note=wacc_note,
-        moat_qual=None,
+        moat_qual=moat_qual,
         ocf_5y=ocf_5y,
         ni_5y=ni_5y,
         total_assets_latest=total_assets,
-        ifrs18_segment_disclosed=None,
-        ifrs18_mpm_qual=None,
+        ifrs18_segment_disclosed=ifrs18_segment_disclosed,
+        ifrs18_mpm_qual=ifrs18_mpm_qual,
         retained_earnings_series=None,
         debt_ratio_pct=debt_ratio_pct,
         altman_z=None,
@@ -310,13 +322,13 @@ def build_kr_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         net_debt_repayment=None,  # TODO: CF 차입금 관련 여러 계정(상환/차입 등) 부호 처리 확정 후 추가
         market_cap=market_cap,
         treasury_retirement_ratio_pct=treasury_retirement_ratio_pct,
-        macro_qual=None,
+        macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
     return compute_score(data)
 
 
-def build_us_report(candidate: dict, as_of: dt.date) -> ScoreReport:
+def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = False) -> ScoreReport:
     """US 후보 1개를 us_collector(yfinance, 키 불필요)로 실측 채워 채점한다.
 
     주의(정직하게 남겨두는 결측): 경제적 해자·IFRS18 MPM 공식화·거시/사이클
@@ -428,6 +440,18 @@ def build_us_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         nopat_approx = op_income[0] * (1 - 0.24)
         roic_pct = nopat_approx / fundamentals["total_assets"][0] * 100
 
+    moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
+    if with_qualitative:
+        moat_qual = qualitative.research_moat(ticker, candidate["name"], "US", as_of)
+        # 미국 상장사는 US GAAP을 쓰므로 IFRS18(IFRS 전용) 조기적용 여부는
+        # research_ifrs18() 프롬프트가 항상 null로 판단하도록 설계돼 있음
+        # (qualitative.py 상단 docstring 참고) — 그래도 부문별 분리공시
+        # 사실 여부(ifrs18_segment_disclosed)는 US에도 의미가 있어 조사한다.
+        ifrs18_segment_disclosed, ifrs18_mpm_qual = qualitative.research_ifrs18(
+            ticker, candidate["name"], "US", as_of
+        )
+        macro_qual = qualitative.research_macro_catalyst(ticker, candidate["name"], "US", as_of)
+
     data = RawFinancials(
         ticker=ticker, company_name=candidate["name"], market="US", as_of_date=as_of.isoformat(),
         roe_5y_pct=roe_series if roe_series else None,
@@ -435,12 +459,12 @@ def build_us_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         roic_pct=roic_pct,
         wacc_pct=wacc_pct,
         wacc_assumptions_note=wacc_note,
-        moat_qual=None,
+        moat_qual=moat_qual,
         ocf_5y=[v for v in fundamentals["ocf"][::-1] if v is not None] or None,
         ni_5y=fundamentals["net_income"][::-1] if fundamentals["net_income"] else None,
         total_assets_latest=fundamentals["total_assets"][0] if fundamentals["total_assets"] else None,
-        ifrs18_segment_disclosed=None,
-        ifrs18_mpm_qual=None,
+        ifrs18_segment_disclosed=ifrs18_segment_disclosed,
+        ifrs18_mpm_qual=ifrs18_mpm_qual,
         retained_earnings_series=None,
         debt_ratio_pct=debt_ratio_pct,
         altman_z=None,
@@ -457,7 +481,7 @@ def build_us_report(candidate: dict, as_of: dt.date) -> ScoreReport:
         net_debt_repayment=net_debt_repayment,
         market_cap=market_cap,
         treasury_retirement_ratio_pct=None,
-        macro_qual=None,
+        macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
     return compute_score(data)
@@ -482,6 +506,19 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
     cooldown_days = sel_cfg.get("cooldown_days", 10)
     universe_cfg = cfg.get("universe", {})
     kr_cfg = universe_cfg.get("kr", {})
+
+    # 2026-09-29: 정성평가(경제적 해자·IFRS18 MPM·거시) 2단계 재채점 — 850종목
+    # 전체에 매일 Gemini를 돌리는 건 비현실적이라, 정량 상위 qualitative_top_n
+    # 개(pipeline.yaml selection.qualitative_top_n, 기본 20)에만 적용한다
+    # (리오님 지시). GEMINI_API_KEY가 없으면 이 단계 자체를 건너뛴다 — 매
+    # 종목마다 실패 로그를 20번 찍는 대신 한 번만 안내하고 정량 채점만 진행.
+    qualitative_top_n = sel_cfg.get("qualitative_top_n", 20)
+    if os.environ.get("GEMINI_API_KEY"):
+        kr_qual_fn = lambda c: build_kr_report(c, as_of, with_qualitative=True)  # noqa: E731
+        us_qual_fn = lambda c: build_us_report(c, as_of, with_qualitative=True)  # noqa: E731
+    else:
+        print(f"[{as_of.isoformat()}] GEMINI_API_KEY 미설정 — 정성평가 2단계 스킵, 정량 채점만 진행")
+        kr_qual_fn = us_qual_fn = None
 
     # 2026-09-29: KR 후보군 생성(get_kr_candidates → KRX 전종목 스냅샷 조회)
     # 자체가 KrxApiError로 죽은 적이 실전에서 실제로 발생했는데(KRX 429),
@@ -518,6 +555,7 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
                 "KR", kr_candidates,
                 score_fn=lambda c: build_kr_report(c, as_of),
                 as_of=as_of, cooldown_days=cooldown_days,
+                qualitative_score_fn=kr_qual_fn, qualitative_top_n=qualitative_top_n,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[{as_of.isoformat()}] KR 채점 단계 실패(KR 전체 스킵, US는 계속 진행): {e}")
@@ -531,6 +569,7 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
                 "US", us_candidates,
                 score_fn=lambda c: build_us_report(c, as_of),
                 as_of=as_of, cooldown_days=cooldown_days,
+                qualitative_score_fn=us_qual_fn, qualitative_top_n=qualitative_top_n,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[{as_of.isoformat()}] US 채점 단계 실패(US 전체 스킵, KR은 계속 진행): {e}")
@@ -624,6 +663,29 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
     ))
 
 
+def _diagnose_qualitative(as_of: dt.date) -> None:
+    """2026-09-29 신설: 정성평가 3항목(qualitative.py, GEMINI_API_KEY 필요)이
+    실제로 동작하는지 삼성전자(KR)·마이크로소프트(US) 2종목만으로 가볍게
+    점검한다. 850종목 전체 파이프라인을 돌리지 않고도 Gemini 연동·JSON
+    파싱·evidence 생성이 정상인지 확인 가능."""
+    import json
+
+    for market, ticker, name in (("KR", "005930", "삼성전자"), ("US", "MSFT", "Microsoft")):
+        print(f"\n=== 정성평가 진단: {name}({ticker}, {market}) ===")
+        candidate = {"ticker": ticker, "name": name, "market": "KOSPI" if market == "KR" else "US"}
+        if market == "KR":
+            report = build_kr_report(candidate, as_of, with_qualitative=True)
+        else:
+            report = build_us_report(candidate, as_of, with_qualitative=True)
+        qual_components = [
+            {"block": b.block_key, "name": c.name, "points": c.points_awarded, "max": c.max_points, "note": c.note}
+            for b in report.blocks
+            for c in b.components
+            if c.name in ("경제적 해자(정성)", "IFRS18 투명성", "거시·사이클·재료(정성)")
+        ]
+        print(json.dumps(qual_components, ensure_ascii=False, indent=2))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="quality-stock-daily 일일 파이프라인 실행")
     parser.add_argument("--dry-run", action="store_true", help="PDF만 생성하고 텔레그램 전송은 생략")
@@ -632,11 +694,17 @@ if __name__ == "__main__":
         "--diagnose-kr", action="store_true",
         help="전체 파이프라인 대신 build_kr_report()를 삼성전자 1종목으로만 실행해 KRX+DART 연동만 점검",
     )
+    parser.add_argument(
+        "--diagnose-qualitative", action="store_true",
+        help="삼성전자+Microsoft 2종목으로 정성평가(qualitative.py, GEMINI_API_KEY 필요) 연동만 점검",
+    )
     args = parser.parse_args()
 
     target_date = dt.date.fromisoformat(args.date) if args.date else dt.date.today()
 
     if args.diagnose_kr:
         _diagnose_kr_report(target_date)
+    elif args.diagnose_qualitative:
+        _diagnose_qualitative(target_date)
     else:
         run_daily(as_of=target_date, dry_run=args.dry_run)

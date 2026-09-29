@@ -5,10 +5,9 @@ name: Test Qualitative Scoring (진단용, 수동 실행)
 # 동작하는지 삼성전자(KR) + Microsoft(US) 2종목만으로 가볍게 확인하는
 # 전용 워크플로. 850종목 전체를 도는 daily-report.yml을 돌리지 않고도
 # 모바일에서 "Run workflow" 한 번으로 Gemini 연동을 점검할 수 있게 했다.
-# KRX_AUTH_KEY(KR 스트레스테스트에 필요)·GEMINI_API_KEY 필요, DART/TELEGRAM
-# 관련 Secrets는 KR 재무데이터/전송 없이도 이 진단엔 필요(DART_API_KEY는
-# build_kr_report 전체가 도니 필요, TELEGRAM은 전송 없이 콘솔 출력만 하므로
-# 불필요).
+# GEMINI_API_KEY만 필요 — qualitative.py 함수를 KRX/DART 경유 없이 직접
+# 호출하도록 설계해서(2026-09-29 수정, main.py _diagnose_qualitative 주석
+# 참고) KRX_AUTH_KEY/DART_API_KEY는 필요 없다.
 #
 # 사용법(모바일 포함): 저장소 Actions 탭 → 왼쪽 목록에서
 # "Test Qualitative Scoring" 선택 → "Run workflow" 버튼 → 실행 로그 확인.
@@ -35,8 +34,6 @@ jobs:
 
       - name: 정성평가 진단 (삼성전자 + Microsoft)
         env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          DART_API_KEY: ${{ secrets.DART_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: python -u -m src.main --diagnose-qualitative

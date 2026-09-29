@@ -666,24 +666,31 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
 def _diagnose_qualitative(as_of: dt.date) -> None:
     """2026-09-29 신설: 정성평가 3항목(qualitative.py, GEMINI_API_KEY 필요)이
     실제로 동작하는지 삼성전자(KR)·마이크로소프트(US) 2종목만으로 가볍게
-    점검한다. 850종목 전체 파이프라인을 돌리지 않고도 Gemini 연동·JSON
-    파싱·evidence 생성이 정상인지 확인 가능."""
+    점검한다.
+
+    2026-09-29 수정: 처음엔 build_kr_report(with_qualitative=True)를 통째로
+    호출했는데, 그 안에 있는 D블록 스트레스테스트(krx_collector, ~130영업일
+    조회)가 그날 KRX 429 문제와 맞물려 정성평가 코드가 실행되기도 전에 죽는
+    문제가 실제로 발생함(test-qualitative.yml 1차 실행 실패 원인). 정성평가는
+    KRX/DART와 무관한 기능이라, qualitative.py 함수를 KRX/DART 경유 없이
+    직접 호출해 Gemini 연동만 순수하게 점검하도록 분리했다."""
     import json
 
     for market, ticker, name in (("KR", "005930", "삼성전자"), ("US", "MSFT", "Microsoft")):
         print(f"\n=== 정성평가 진단: {name}({ticker}, {market}) ===")
-        candidate = {"ticker": ticker, "name": name, "market": "KOSPI" if market == "KR" else "US"}
-        if market == "KR":
-            report = build_kr_report(candidate, as_of, with_qualitative=True)
-        else:
-            report = build_us_report(candidate, as_of, with_qualitative=True)
-        qual_components = [
-            {"block": b.block_key, "name": c.name, "points": c.points_awarded, "max": c.max_points, "note": c.note}
-            for b in report.blocks
-            for c in b.components
-            if c.name in ("경제적 해자(정성)", "IFRS18 투명성", "거시·사이클·재료(정성)")
-        ]
-        print(json.dumps(qual_components, ensure_ascii=False, indent=2))
+        moat = qualitative.research_moat(ticker, name, market, as_of)
+        segment_disclosed, mpm_qual = qualitative.research_ifrs18(ticker, name, market, as_of)
+        macro = qualitative.research_macro_catalyst(ticker, name, market, as_of)
+        result = {
+            "moat": {"points": moat.points_awarded, "max": moat.max_points, "evidence": moat.evidence} if moat else None,
+            "ifrs18_segment_disclosed": segment_disclosed,
+            "ifrs18_mpm_qual": (
+                {"points": mpm_qual.points_awarded, "max": mpm_qual.max_points, "evidence": mpm_qual.evidence}
+                if mpm_qual else None
+            ),
+            "macro": {"points": macro.points_awarded, "max": macro.max_points, "evidence": macro.evidence} if macro else None,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

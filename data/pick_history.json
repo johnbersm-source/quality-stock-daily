@@ -3,5 +3,15 @@
     "market": "US",
     "ticker": "AES",
     "date": "2026-09-29"
+  },
+  {
+    "market": "KR",
+    "ticker": "009970",
+    "date": "2026-09-29"
+  },
+  {
+    "market": "US",
+    "ticker": "VTRS",
+    "date": "2026-09-29"
   }
 ]

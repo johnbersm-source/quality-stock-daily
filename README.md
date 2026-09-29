@@ -24,7 +24,7 @@
 | `src/selection.py` (종목 선정 로직) | **완료, 로직 검증됨** | 게이트통과+최고점, 쿨다운, 전원미통과 폴백 — `tests/test_selection.py` |
 | `src/universe.py` (후보군 동적 생성) | **완료, KR/US 모두 실측 검증됨(2026-09-29)** | 매 실행마다 그 시점 기준으로 후보군 재계산(아래 "후보군 생성 방식" 참고) — KR 350개, US 503개 실제 조회 확인. `tests/test_universe.py` |
 | `src/main.py` — `build_us_report()` | **완료, US 다수 후보 전체 라이브 검증됨** | 키 불필요(yfinance). `select_daily_pick()`까지 실제 연동 테스트 완료 |
-| `src/main.py` — `build_kr_report()` | 작성됨, KRX 부분 실측 검증, DART 부분 검증 진행 중(2026-09-29) | 두 키 모두 등록됨. `bsns_year`(사업보고서 연도) 계산 버그 발견·수정(존재하지 않는 미래 연도를 조회하고 있었음) — `python3 -m src.main --diagnose-kr`(또는 워크플로 `Test DART + KR Report`)로 라이브 검증 |
+| `src/main.py` — `build_kr_report()` | `bsns_year` 버그 수정 + B/F/G 블록 구조적 0점 문제(필드 미연결) 보강 완료, **재실측 검증 대기 중**(2026-09-29) | 첫 실측(버그 있던 구버전)은 성공했으나 이번 보강판은 아직 라이브로 안 돌려봄 — `python3 -m src.main --diagnose-kr`(또는 워크플로 `Test DART + KR Report`)로 재확인 필요 |
 | `.github/workflows/daily-report.yml` | 작성됨, 아직 미실행 | `DART_API_KEY` 등록 후 1차 실행 가능. pick_history.json 자동 커밋 포함 |
 
 ## 후보군 생성 방식 (2026-09-28, 정적 리스트 → 동적 생성으로 전환)
@@ -78,11 +78,13 @@
    **완료 (2026-09-29)** — `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` 등록,
    실제 테스트 메시지 전송·수신 확인.
 3. ~~`DART_API_KEY` 발급 및 GitHub Secrets 등록~~ **완료 (2026-09-29)**.
-4. **`build_kr_report()`의 DART 의존 부분 라이브 검증** — 진행 중.
-   검증 과정에서 `bsns_year`(조회할 사업보고서 연도) 계산 로직이 뒤집혀
-   있던 버그를 코드리뷰로 먼저 발견·수정함(존재할 수 없는 미래 연도의
-   사업보고서를 조회하고 있었음). ROE 지표명(idx_nm) 매칭은 아직 실측
-   미확인 — `Test DART + KR Report` 워크플로로 확인 필요.
+4. **`build_kr_report()`의 KR 스코어카드 재검증** — 1차 라이브 테스트에서
+   `bsns_year` 버그(존재할 수 없는 미래 연도 조회)는 수정했고, ROE 매칭은
+   정상 동작을 확인했으나, B(이익의질)·F(가격)·G(주주환원) 3개 블록(37점)이
+   필드 미연결로 구조적으로 항상 0점이던 문제를 코드리뷰로 추가 발견 — DART
+   전체 재무제표 실측 계정명(자기주식의 취득/배당금의 지급/현금및현금성자산/
+   당기순이익 등)으로 보강 완료. **이 보강판 자체는 아직 라이브 미검증** —
+   `Test DART + KR Report` 워크플로 재실행으로 확인 필요.
 5. **1차 실제 GitHub Actions 실행으로 850종목 규모의 실행시간/API 호출량 확인**
    (위 리스크 섹션 참고) — 필요시 사전 스크리닝 설계.
 6. **정성평가 3항목(경제적 해자·IFRS18 MPM·거시/사이클, 총 17.5/100점) 보강**:

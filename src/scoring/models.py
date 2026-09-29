@@ -85,6 +85,7 @@ class RawFinancials:
     net_debt_repayment: float | None = None
     market_cap: float | None = None
     treasury_retirement_ratio_pct: float | None = None  # 발행주식 대비 소각비율(%)
+    commercial_code_benefit_qual: QualitativeScore | None = None  # 상법개정 수혜(업종) 정성평가 (외부 입력, 2026-09-30 신설)
 
     # --- H블록: 거시·사이클·재료 (8점, 전량 정성) ---
     macro_qual: QualitativeScore | None = None

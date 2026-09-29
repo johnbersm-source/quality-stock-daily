@@ -40,9 +40,9 @@ from .scoring.models import QualitativeScore
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CACHE_PATH = DATA_DIR / "cache" / "qualitative_cache.json"
 
-# 컴포넌트별 캐시 유효기간(일) — 해자/IFRS18은 자주 안 바뀌니 길게,
+# 컴포넌트별 캐시 유효기간(일) — 해자/IFRS18/상법개정 수혜는 자주 안 바뀌니 길게,
 # 거시/사이클은 시황·촉매가 매일 바뀌므로 짧게.
-_TTL_DAYS = {"moat": 90, "ifrs18": 90, "macro": 1}
+_TTL_DAYS = {"moat": 90, "ifrs18": 90, "macro": 1, "commercial_code": 90}
 
 _MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
 
@@ -396,3 +396,86 @@ def research_ifrs18(
         },
     )
     return segment_disclosed, mpm_qual
+
+
+# --- G블록: 상법개정 수혜(업종) (3점, PDF 원본 항목 ⑩ 대응, 2026-09-30 신설) ---
+#
+# 2026-09-30: PDF 원본 vs v3 비교 부록을 만들면서 발견한 갭 — 원본 항목 ⑩
+# "상법개정 수혜"(직접 수혜 업종(지주·금융·자산주) + 선제 대응→10 / 간접
+# 수혜→5 / 해당없음→2)가 v3에는 소각비율 컴포넌트 이름에만 흔적으로 남아있고
+# 실제로 채점되지 않고 있었다. 리오님이 별도 컴포넌트 신설을 지시해 추가.
+#
+# 상법(한국 상법) 개정은 한국 기업에만 적용되는 제도이므로, US 종목은 IFRS18과
+# 마찬가지로 구조적으로 해당 없음(None)이 정직한 결과다 — 0점이 아니라 "평가
+# 대상 자체가 아님".
+
+_COMMERCIAL_CODE_RUBRIC = """당신은 한국 지배구조 전문 애널리스트입니다. 다음 기업이
+한국 상법 개정(이사의 충실의무를 회사뿐 아니라 주주 전체로 확대, 집중투표제
+활성화, 감사위원 분리선출 확대 등 지배구조·주주권 강화 방향)의 수혜 업종에
+해당하는지, 그리고 그에 선제적으로 대응(지배구조 개편, 주주환원 확대, 밸류업
+계획 공시 등)했는지 0~{max_points}점으로 채점하세요.
+
+{grounding_notice}
+
+기업: {company_name} ({ticker}, {market} 시장)
+
+**중요**: {market} 시장 기업이 미국 등 한국 상법 적용을 받지 않는 곳이라면
+애초에 이 항목 자체가 적용 대상이 아니므로 applicable을 반드시 false로
+답하세요.
+
+채점 기준 (applicable=true인 경우에만):
+- {max_points}점: 지주회사·금융회사(은행/보험/증권)·순자산가치 대비 저평가된
+  자산주 등 직접 수혜 업종에 해당하고, 지배구조 개편이나 주주환원 확대 등
+  선제 대응 근거도 있음.
+- {mid}점 내외: 직접 수혜 업종은 아니지만 지배구조 개선의 간접 수혜가
+  예상되거나(예: 대기업집단 계열사), 선제 대응 근거가 불확실함.
+- 0~1점: 해당 업종도 아니고 선제 대응 근거도 없음.
+
+확실한 근거가 없으면 낮은 점수를 주고 그 사실을 evidence에 명시하세요.
+
+아래 JSON 형식으로만 답하세요(다른 텍스트 없이):
+{{"applicable": <true/false>, "points": <applicable=true일 때만 0~{max_points}
+사이 숫자, false면 null>, "evidence": "<채점 근거를 한국어 2~4문장으로,
+업종 분류와 선제 대응 여부 포함. applicable=false면 그 이유를 명시>"}}"""
+
+
+def research_commercial_code_benefit(
+    ticker: str, company_name: str, market: str, as_of: dt.date
+) -> QualitativeScore | None:
+    """반환: QualitativeScore|None. market="US"이거나 Gemini가 applicable=false로
+    답하면 None이 정직한 결과다(한국 상법은 한국 기업에만 적용 — IFRS18의 US
+    GAAP 비적용과 동일한 구조)."""
+    if market == "US":
+        return None  # 한국 상법은 미국 상장사에 애초에 적용되지 않음 — 조사 자체가 무의미
+
+    cached = _cache_get(market, ticker, "commercial_code", as_of)
+    if cached:
+        if cached.get("points") is None:
+            return None
+        return QualitativeScore(points_awarded=cached["points"], max_points=3, evidence=cached["evidence"])
+
+    prompt = _COMMERCIAL_CODE_RUBRIC.format(
+        max_points=3, mid=1.5, company_name=company_name, ticker=ticker, market=market,
+        grounding_notice=_NO_GROUNDING_NOTICE if not _USE_GROUNDING_DEFAULT else "",
+    )
+    try:
+        parsed = _call_gemini_json(prompt)
+    except QualitativeResearchError as e:
+        print(f"[qualitative] {market} {ticker} 상법개정 수혜 조사 실패(N/A로 남김): {e}")
+        return None
+
+    applicable = parsed.get("applicable")
+    score = None
+    if applicable is True and parsed.get("points") is not None:
+        try:
+            score = _build_qual_score(parsed, max_points=3, component_label="상법개정 수혜(업종)")
+        except QualitativeResearchError as e:
+            print(f"[qualitative] {market} {ticker} 상법개정 수혜 점수 생성 실패(N/A로 남김): {e}")
+            score = None
+    # applicable=False 또는 points 없음 → score=None 유지(구조적 미적용/판단불가, 0점 아님)
+
+    _cache_put(
+        market, ticker, "commercial_code", as_of,
+        {"points": score.points_awarded if score else None, "evidence": score.evidence if score else None},
+    )
+    return score

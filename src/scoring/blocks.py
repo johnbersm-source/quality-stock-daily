@@ -321,8 +321,11 @@ def score_block_f(data: RawFinancials) -> BlockResult:
 # G블록: 주주환원·지배구조 (10점)
 # ------------------------------------------------------------
 
-def score_shareholder_yield(data: RawFinancials, max_points: float = 5) -> ComponentResult:
-    """(배당+순매입+순부채상환)/시가총액. 밴드: >=5% 만점, 0~5% 선형, <0 0점."""
+def score_shareholder_yield(data: RawFinancials, max_points: float = 4) -> ComponentResult:
+    """(배당+순매입+순부채상환)/시가총액. 밴드: >=5% 만점, 0~5% 선형, <0 0점.
+
+    2026-09-30: 상법개정 수혜(업종) 컴포넌트 신설로 G블록 내 배점을
+    5→4로 재조정(4+3+3=10, 총점 100점 불변 — README '남은 작업' 참고)."""
     if data.market_cap is None or not data.market_cap:
         return ComponentResult("Shareholder Yield", None, max_points, "시가총액 데이터 없음")
     components = [data.dividend_total, data.net_buyback_amount, data.net_debt_repayment]
@@ -335,19 +338,38 @@ def score_shareholder_yield(data: RawFinancials, max_points: float = 5) -> Compo
     return ComponentResult("Shareholder Yield", round(pts, 2), max_points, note)
 
 
-def score_treasury_retirement(data: RawFinancials, max_points: float = 5) -> ComponentResult:
-    """상법개정 수혜 — 발행주식 대비 자사주 소각비율(%). 밴드: >=3% 만점, 0~3% 선형, 0 → 0점."""
+def score_treasury_retirement(data: RawFinancials, max_points: float = 3) -> ComponentResult:
+    """발행주식 대비 자사주 소각비율(%). 밴드: >=3% 만점, 0~3% 선형, 0 → 0점.
+
+    2026-09-30: 컴포넌트명에서 "(상법개정 수혜)"를 뗐다 — 이제 상법개정 수혜는
+    아래 score_commercial_code_benefit()이 별도로 담당한다(이전엔 이 소각비율
+    컴포넌트 하나가 원본 PDF 항목 ⑤ 주주환원과 ⑩ 상법개정 수혜 두 개를 동시에
+    대신하고 있었음 — PDF vs v3 비교 부록에서 발견한 갭, README 참고). 배점도
+    5→3으로 재조정."""
     if data.treasury_retirement_ratio_pct is None:
-        return ComponentResult("소각비율(상법개정 수혜)", None, max_points, "소각비율 데이터 없음")
+        return ComponentResult("소각비율", None, max_points, "소각비율 데이터 없음")
     pts = _lerp_score(data.treasury_retirement_ratio_pct, 0, 3, 0, max_points)
     note = f"발행주식 대비 소각비율={data.treasury_retirement_ratio_pct:.2f}%"
-    return ComponentResult("소각비율(상법개정 수혜)", round(pts, 2), max_points, note)
+    return ComponentResult("소각비율", round(pts, 2), max_points, note)
+
+
+def score_commercial_code_benefit(data: RawFinancials, max_points: float = 3) -> ComponentResult:
+    """상법개정 수혜(업종) — PDF 원본 항목 ⑩. 지주·금융·자산주 등 상법개정
+    (이사 충실의무 확대, 집중투표제 등 지배구조 규제 강화)의 직접 수혜
+    업종인지, 그리고 그에 선제 대응(지배구조 개편·주주환원 확대 공시 등)했는지
+    Gemini 정성평가(qualitative.py)로 채점한다. 근거 없는 점수는
+    QualitativeScore.__post_init__에서 자체 거부되므로 이중 안전장치."""
+    q = data.commercial_code_benefit_qual
+    if q is None:
+        return ComponentResult("상법개정 수혜(업종, 정성)", None, max_points, "정성평가 미입력 — 채점 불가")
+    return ComponentResult("상법개정 수혜(업종, 정성)", q.points_awarded, max_points, q.evidence)
 
 
 def score_block_g(data: RawFinancials) -> BlockResult:
     return BlockResult("G_shareholder_return_governance", "주주환원·지배구조", 10, [
         score_shareholder_yield(data),
         score_treasury_retirement(data),
+        score_commercial_code_benefit(data),
     ])
 
 

@@ -286,12 +286,16 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         }
 
     moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
+    commercial_code_benefit_qual = None
     if with_qualitative:
         moat_qual = qualitative.research_moat(ticker, candidate["name"], "KR", as_of)
         ifrs18_segment_disclosed, ifrs18_mpm_qual = qualitative.research_ifrs18(
             ticker, candidate["name"], "KR", as_of
         )
         macro_qual = qualitative.research_macro_catalyst(ticker, candidate["name"], "KR", as_of)
+        commercial_code_benefit_qual = qualitative.research_commercial_code_benefit(
+            ticker, candidate["name"], "KR", as_of
+        )
 
     data = RawFinancials(
         ticker=ticker, company_name=candidate["name"], market="KR", as_of_date=as_of.isoformat(),
@@ -322,6 +326,7 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         net_debt_repayment=None,  # TODO: CF 차입금 관련 여러 계정(상환/차입 등) 부호 처리 확정 후 추가
         market_cap=market_cap,
         treasury_retirement_ratio_pct=treasury_retirement_ratio_pct,
+        commercial_code_benefit_qual=commercial_code_benefit_qual,
         macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
@@ -441,6 +446,7 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         roic_pct = nopat_approx / fundamentals["total_assets"][0] * 100
 
     moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
+    commercial_code_benefit_qual = None
     if with_qualitative:
         moat_qual = qualitative.research_moat(ticker, candidate["name"], "US", as_of)
         # 미국 상장사는 US GAAP을 쓰므로 IFRS18(IFRS 전용) 조기적용 여부는
@@ -451,6 +457,11 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
             ticker, candidate["name"], "US", as_of
         )
         macro_qual = qualitative.research_macro_catalyst(ticker, candidate["name"], "US", as_of)
+        # 한국 상법은 미국 상장사에 적용되지 않으므로 research_commercial_code_benefit()이
+        # market="US"를 보자마자 API 호출 없이 즉시 None을 반환한다(qualitative.py 참고).
+        commercial_code_benefit_qual = qualitative.research_commercial_code_benefit(
+            ticker, candidate["name"], "US", as_of
+        )
 
     data = RawFinancials(
         ticker=ticker, company_name=candidate["name"], market="US", as_of_date=as_of.isoformat(),
@@ -481,6 +492,7 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         net_debt_repayment=net_debt_repayment,
         market_cap=market_cap,
         treasury_retirement_ratio_pct=None,
+        commercial_code_benefit_qual=commercial_code_benefit_qual,
         macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
@@ -664,9 +676,9 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
 
 
 def _diagnose_qualitative(as_of: dt.date) -> None:
-    """2026-09-29 신설: 정성평가 3항목(qualitative.py, GEMINI_API_KEY 필요)이
+    """2026-09-29 신설: 정성평가 항목(qualitative.py, GEMINI_API_KEY 필요)이
     실제로 동작하는지 삼성전자(KR)·마이크로소프트(US) 2종목만으로 가볍게
-    점검한다.
+    점검한다. 2026-09-30: 상법개정 수혜(업종) 컴포넌트 신설로 4항목 점검.
 
     2026-09-29 수정: 처음엔 build_kr_report(with_qualitative=True)를 통째로
     호출했는데, 그 안에 있는 D블록 스트레스테스트(krx_collector, ~130영업일
@@ -681,6 +693,7 @@ def _diagnose_qualitative(as_of: dt.date) -> None:
         moat = qualitative.research_moat(ticker, name, market, as_of)
         segment_disclosed, mpm_qual = qualitative.research_ifrs18(ticker, name, market, as_of)
         macro = qualitative.research_macro_catalyst(ticker, name, market, as_of)
+        commercial_code = qualitative.research_commercial_code_benefit(ticker, name, market, as_of)
         result = {
             "moat": {"points": moat.points_awarded, "max": moat.max_points, "evidence": moat.evidence} if moat else None,
             "ifrs18_segment_disclosed": segment_disclosed,
@@ -689,6 +702,10 @@ def _diagnose_qualitative(as_of: dt.date) -> None:
                 if mpm_qual else None
             ),
             "macro": {"points": macro.points_awarded, "max": macro.max_points, "evidence": macro.evidence} if macro else None,
+            "commercial_code_benefit": (
+                {"points": commercial_code.points_awarded, "max": commercial_code.max_points, "evidence": commercial_code.evidence}
+                if commercial_code else None
+            ),
         }
         print(json.dumps(result, ensure_ascii=False, indent=2))
 

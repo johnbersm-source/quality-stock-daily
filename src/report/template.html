@@ -56,6 +56,18 @@
         margin-top: 10pt;
         margin-bottom: 4pt;
     }
+    .origin-badge {
+        display: inline;
+        font-size: 7pt;
+        font-weight: normal;
+        padding: 1pt 5pt;
+        margin-left: 6pt;
+        color: #555555;
+        background-color: #eeeeee;
+    }
+    .origin-badge-pdf { background-color: #e8e2d0; color: #6b5b1e; }
+    .origin-badge-v3 { background-color: #dde8f5; color: #1a4fa0; }
+
     .grade-badge {
         display: inline;
         font-size: 12pt;
@@ -67,6 +79,14 @@
     .grade-관찰대상 { color: #ffffff; background-color: #b8860b; }
     .grade-관찰 { color: #ffffff; background-color: #8a1f1f; }
     .grade-미달 { color: #ffffff; background-color: #8a1f1f; }
+
+    table.score-summary { width: 100%; border-collapse: collapse; margin-bottom: 10pt; }
+    table.score-summary td {
+        width: 50%; vertical-align: top; padding: 8pt 10pt;
+        border: 0.5pt solid #d5d9de; background-color: #f7f9fb;
+    }
+    .score-summary-label { font-size: 8pt; color: #666666; margin-bottom: 2pt; }
+    .score-summary-total { font-size: 13pt; font-weight: bold; }
 
     table.score-table {
         width: 100%;
@@ -88,11 +108,24 @@
     }
     td.num { text-align: right; white-space: nowrap; }
     tr.block-row td { background-color: #f5f7fa; font-weight: bold; }
-    .missing-flag { color: #b8860b; font-size: 8pt; }
+    .missing-flag { color: #b8860b; font-size: 8pt; font-weight: normal; }
     .gate-pass { color: #1e6b3c; font-weight: bold; }
-    .gate-fail { color: #8a1f1f; font-weight: bold; }
+    .gate-fail { color: #1a4fa0; font-weight: bold; }
     .gate-unknown { color: #8a1f1f; font-weight: bold; }
     .gate-reason { font-size: 8.7pt; color: #333333; }
+
+    /* 긍정(빨강)/중립/부정(파랑)/결측(회색) 색상 코딩 — 리오님 요청:
+       "점수가 기준치보다 높을때 긍정적일때 진한 빨간색으로 표시... 부정적일때는
+       파란색으로 표시" (만점 대비 60%이상=긍정, 40%미만=부정, 그 사이=중립) */
+    .perf-pos { color: #b3001b; font-weight: bold; }
+    .perf-neg { color: #1a4fa0; font-weight: bold; }
+    .perf-mid { color: #4a4a4a; }
+    .perf-na { color: #999999; font-style: italic; font-weight: normal; }
+    /* 설명 속 핵심 수치 강조색 — 판정색(빨강/파랑)과 구분되는 제3의 색 */
+    .highlight-num { color: #9a6b00; font-weight: bold; }
+    .plain-note { font-size: 8.3pt; color: #2a2a2a; margin-bottom: 2pt; }
+    .tech-note { font-size: 8.3pt; color: #555555; }
+
     .verdict-box {
         margin-top: 8pt;
         padding: 8pt 10pt;
@@ -108,6 +141,15 @@
         font-size: 9.3pt;
         white-space: pre-wrap;
     }
+    .appendix-box {
+        margin-top: 6pt;
+        padding: 8pt 10pt;
+        background-color: #f7f9fb;
+        border: 0.5pt solid #d5d9de;
+        font-size: 8.8pt;
+    }
+    .appendix-box ul { margin: 4pt 0 4pt 14pt; padding: 0; }
+    .appendix-box li { margin-bottom: 3pt; }
     .disclaimer {
         margin-top: 18pt;
         font-size: 7.7pt;
@@ -125,16 +167,35 @@
 <body>
 
 <h1>Quality Stock Daily — 우량주 스코어카드 리포트</h1>
-<div class="subtitle">기준일: {{ as_of_date }} · 방법론: v3(자체 8블록·2게이트) — PDF 원본(실전경제학 리서치 Vol.1) 10항목 기반 확장</div>
+<div class="subtitle">
+    기준일: {{ as_of_date }} · v3(자체 8블록·2게이트) 및 PDF 원본(실전경제학 리서치 Vol.1) 10항목,
+    두 방법론 점수를 함께 제시 · 최종 등급이 "관찰대상(70점)" 이상인 종목만 수록
+</div>
 
 {% for stock in stocks %}
 <h2>{{ loop.index }}. {{ stock.report.company_name }} ({{ stock.report.ticker }}, {{ stock.report.market }})</h2>
 
-<p>
-    총점 <b>{{ "%.2f"|format(stock.report.total_score) }} / {{ "%.0f"|format(stock.report.total_possible) }}</b>
-    &nbsp;&nbsp; 최종 등급:
-    <span class="grade-badge grade-{{ stock.report.final_grade }}">{{ stock.report.final_grade }}</span>
-</p>
+<table class="score-summary">
+<tr>
+    <td>
+        <div class="score-summary-label">v3(자체 8블록·2게이트) 총점 · 최종 등급</div>
+        <span class="score-summary-total">{{ "%.2f"|format(stock.report.total_score) }} / {{ "%.0f"|format(stock.report.total_possible) }}</span>
+        &nbsp;&nbsp;
+        <span class="grade-badge grade-{{ stock.report.final_grade }}">{{ stock.report.final_grade }}</span>
+    </td>
+    {% if stock.report.pdf_original %}
+    <td>
+        <div class="score-summary-label">PDF 원본(10항목×10점) 총점 · 등급 — 원본 채점기준표 그대로 적용</div>
+        <span class="score-summary-total">{{ "%.0f"|format(stock.report.pdf_original.total_score) }} / {{ "%.0f"|format(stock.report.pdf_original.total_possible) }}</span>
+        &nbsp;&nbsp;
+        <span class="grade-badge grade-{{ stock.report.pdf_original.final_grade }}">{{ stock.report.pdf_original.final_grade }}</span>
+        {% if stock.report.pdf_original.na_count > 0 %}
+        <div class="missing-flag" style="margin-top:3pt;">데이터 결측 {{ stock.report.pdf_original.na_count }}개 항목(N/A는 0점 아님, 채점 자체 불가)</div>
+        {% endif %}
+    </td>
+    {% endif %}
+</tr>
+</table>
 
 {% if stock.report.final_grade == "관찰" %}
 <div class="verdict-box">
@@ -145,49 +206,87 @@
 </div>
 {% endif %}
 
-<h3>게이트 판정</h3>
+<h3>게이트 판정 <span class="origin-badge origin-badge-v3">v3 고유(PDF 원본엔 게이트 개념 없음)</span></h3>
 <table class="score-table">
 <tr><th style="width:28%">게이트</th><th style="width:14%">판정</th><th>근거</th></tr>
 {% for g in stock.report.gates %}
 <tr>
-    <td>{{ g.gate_key }}</td>
+    <td>{{ gate_korean(g.gate_key) }}</td>
     <td class="{{ 'gate-pass' if g.passed == True else ('gate-fail' if g.passed == False else 'gate-unknown') }}">
         {{ '통과' if g.passed == True else ('미통과' if g.passed == False else '판정불가') }}
     </td>
-    <td class="gate-reason">{{ g.reason }}</td>
+    <td class="gate-reason">{{ highlight_numbers(g.reason) }}</td>
 </tr>
 {% endfor %}
 </table>
 
 {% if stock.chart_uri %}
-<h3>블록별 득점률</h3>
+<h3>v3 블록별 득점률</h3>
 <img src="{{ stock.chart_uri }}" width="480" height="208" />
 {% endif %}
 
-<h3>8블록 점수 상세</h3>
+<h3>v3 8블록 점수 상세 <span class="origin-badge origin-badge-v3">v3</span></h3>
 <table class="score-table">
 <tr>
-    <th style="width:26%">블록 / 항목</th>
-    <th style="width:12%">점수</th>
-    <th>설명 (쉬운 풀이 포함)</th>
+    <th style="width:24%">블록 / 항목</th>
+    <th style="width:11%">점수</th>
+    <th>쉬운 풀이 및 근거</th>
 </tr>
 {% for block in stock.report.blocks %}
 <tr class="block-row">
-    <td>{{ block.name }}</td>
-    <td class="num">{{ "%.2f"|format(block.points_awarded) }} / {{ "%.0f"|format(block.max_points) }}
+    <td>
+        {{ clean_block_name(block.name) }}
+        <span class="origin-badge {{ 'origin-badge-pdf' if block_origin(block.block_key) == 'PDF원본 확장' else 'origin-badge-v3' }}">{{ block_origin(block.block_key) }}</span>
+    </td>
+    <td class="num {{ perf_class(block.points_awarded, block.max_points) }}">{{ "%.2f"|format(block.points_awarded) }} / {{ "%.0f"|format(block.max_points) }}
         {% if block.has_missing_data %}<div class="missing-flag">일부 데이터 결측</div>{% endif %}
     </td>
     <td></td>
 </tr>
 {% for c in block.components %}
 <tr>
-    <td>&nbsp;&nbsp;· {{ c.name }}</td>
-    <td class="num">{{ "%.2f"|format(c.points_awarded) if c.points_awarded is not none else "N/A" }} / {{ "%.1f"|format(c.max_points) }}</td>
-    <td>{{ c.note }}</td>
+    <td>&nbsp;&nbsp;· {{ component_korean(c.name) }}</td>
+    <td class="num {{ perf_class(c.points_awarded, c.max_points) }}">{{ "%.2f"|format(c.points_awarded) if c.points_awarded is not none else "N/A" }} / {{ "%.1f"|format(c.max_points) }}</td>
+    <td>
+        {% set plain = plain_explain(c.name, c.points_awarded, c.max_points) %}
+        {% if plain %}<div class="plain-note">{{ plain }}</div>{% endif %}
+        <div class="tech-note">{{ highlight_numbers(c.note) }}</div>
+    </td>
 </tr>
 {% endfor %}
 {% endfor %}
 </table>
+
+{% if stock.report.pdf_original %}
+{% if stock.pdf_chart_uri %}
+<h3>PDF 원본 항목별 득점률</h3>
+<img src="{{ stock.pdf_chart_uri }}" width="480" height="240" />
+{% endif %}
+
+<h3>PDF 원본 10항목 점수 상세 <span class="origin-badge origin-badge-pdf">PDF원본</span></h3>
+<p style="font-size:8.3pt; color:#666666; margin-top:-2pt; margin-bottom:5pt;">
+    실전경제학 리서치 Vol.1 p.36 채점 기준표를 그대로 적용(3단계 컷라인, v3처럼 구간 보간하지 않음).
+    해자·IFRS18·상법개정 정성 항목은 v3가 이미 조사해둔 Gemini 근거를 PDF의 3단계 배점으로 재매핑(추가 조사 없음).
+</p>
+<table class="score-table">
+<tr>
+    <th style="width:24%">항목</th>
+    <th style="width:11%">점수</th>
+    <th>쉬운 풀이 및 근거</th>
+</tr>
+{% for c in stock.report.pdf_original.items %}
+<tr>
+    <td>{{ c.name }}</td>
+    <td class="num {{ perf_class(c.points_awarded, c.max_points) }}">{{ "%.0f"|format(c.points_awarded) if c.points_awarded is not none else "N/A" }} / {{ "%.0f"|format(c.max_points) }}</td>
+    <td>
+        {% set plain = plain_explain(c.name, c.points_awarded, c.max_points) %}
+        {% if plain %}<div class="plain-note">{{ plain }}</div>{% endif %}
+        <div class="tech-note">{{ highlight_numbers(c.note) }}</div>
+    </td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
 
 {% if stock.narrative %}
 <h3>종합 코멘트</h3>
@@ -196,52 +295,37 @@
 
 {% endfor %}
 
-<h2>부록: PDF 원본(실전경제학 리서치 Vol.1) 10항목 vs v3 8블록 방법론 비교</h2>
-<p style="font-size:8.7pt; color:#444444; margin-bottom:6pt;">
-    본 파이프라인의 스코어카드(v3)는 PDF 원본의 10개 항목(각 10점, 100점 만점)을
-    기계적으로 그대로 옮긴 것이 아니라, 항목을 재구성·재배점하고 리오님이 요청한
-    확장 항목(과거 급락장 실측 방어력, 실시간 거시·재료 반영)을 더해 8개 블록으로
-    재설계한 버전입니다. 아래 표는 원본 항목이 v3의 어느 블록/컴포넌트로 이어졌는지,
-    배점이 어떻게 바뀌었는지, 그리고 아직 완전히 반영되지 않은 부분이 무엇인지 정리한
-    것입니다.
-</p>
-<table class="score-table">
-<tr>
-    <th style="width:20%">PDF 원본 항목 (배점)</th>
-    <th style="width:26%">v3 대응 블록·컴포넌트 (배점)</th>
-    <th>비고</th>
-</tr>
-<tr><td>① ROE (10)</td><td>A블록 · ROE (8)</td><td>로직 동일(5년 평균 ROE 구간별 채점), 배점만 축소</td></tr>
-<tr><td>② 영업현금흐름 (10)</td><td>B블록 · OCF/NI+발생액비율 (6)</td><td>배점 축소, 발생액비율(이익의 질) 지표를 더해 원본보다 정교화</td></tr>
-<tr><td>③ 이익잉여금 (10)</td><td>C블록 · 이익잉여금 장기추이 (6)</td><td>배점 축소. 10년치 추이가 이상적이나 현재 DART로 확보 가능한 기간이 더 짧아 근사 채점 중(추가 데이터 소스 필요, README 남은 작업 참고)</td></tr>
-<tr><td>④ 경제적 해자 (10)</td><td>A블록 · 경제적 해자(정성) (8)</td><td>배점 축소. 2026-09-29부터 Gemini 실리서치 기반 정성평가로 채점(이전엔 N/A placeholder)</td></tr>
-<tr><td>⑤ 주주환원 (10)</td><td>G블록 · Shareholder Yield(4) + 소각비율(3) = 7</td><td>배당수익률과 자사주소각을 별도 컴포넌트로 세분화. 2026-09-30 항목⑩ 신설로 배점 일부(3점)를 상법개정 수혜로 재배분</td></tr>
-<tr><td>⑥ PBR 수준 (10)</td><td>F블록 · PER·PBR·EV/EBIT 복수배수 (18)</td><td>PBR 단독 대신 PER·EV/EBIT까지 포함해 가격 평가를 확장(배점도 최대 블록으로 확대)</td></tr>
-<tr><td>⑦ 부채비율 (10)</td><td>C블록 · 부채비율+Altman Z (8)</td><td>배점 축소, Altman Z-Score(부실위험) 지표를 더해 원본보다 정교화</td></tr>
-<tr><td>⑧ 자본배분 능력 (10)</td><td>A블록 · ROIC-WACC 스프레드 (6)</td><td>로직 동일(ROIC가 WACC를 지속 상회하는지), 배점만 축소</td></tr>
-<tr><td>⑨ IFRS18 투명성 (10)</td><td>B블록 · IFRS18 투명성 (3)</td><td>배점 대폭 축소 — IFRS18이 2027-01-01 의무시행 전이라 대부분 종목에서 구조적으로 N/A인 점을 반영해 과도한 가중을 피함</td></tr>
-<tr><td>⑩ 상법개정 수혜 (10)</td><td>G블록 · 상법개정 수혜(업종, 정성) (3)</td><td>2026-09-30 신설 — 지주·금융·자산주 등 직접 수혜 업종 여부 + 선제 대응(지배구조 개편·주주환원 확대) 여부를 Gemini 정성평가로 채점(한국 상법이라 US 종목은 구조적으로 N/A). 배점 축소(10→3), IFRS18과 같은 이유로 과도한 가중은 피함</td></tr>
-</table>
-<p style="font-size:8.7pt; color:#444444; margin-top:4pt;">
-    <b>v3 신설 항목(PDF 원본에는 없음)</b>: D블록 주가방어력(12점, 과거 급락 구간
-    실측 스트레스테스트 방어력 — 리오님이 "다른 종목이 폭락해도 흔들리지 않는
-    우량주" 조건으로 요청), E블록 추세·성장(7점, 매출·영업이익 3년 CAGR),
-    H블록 거시·사이클·재료(8점, 실시간 시황·촉매 정성평가 — 리오님이 요청한
-    "실시간 시장 상황·재료 반영"). 세 블록 합산 27점은 원본 10항목 체계에
-    없던 v3 고유 확장분입니다. 총점 배점: 원본 100점(10항목×10) vs v3 100점
-    (A22·B9·C14·D12·E7·F18·G10·H8, 8블록 재분배).
-</p>
+<h2>부록: PDF 원본 vs v3 방법론 요약</h2>
+<div class="appendix-box">
+    <ul>
+        <li><b>배점 방식</b>: PDF 원본은 10개 항목×10점(3단계 컷라인 채점, 예: ROE ≥15%→10 / ≥10%→6 / <10%→2)이고,
+            v3는 그 10항목을 8개 블록(A22·B9·C14·D12·E7·F18·G10·H8)으로 재구성·재배점하면서 구간 안에서
+            연속적으로 보간해 채점한다(계단식이 아님).</li>
+        <li><b>v3만의 신설 블록(PDF엔 없음)</b>: D블록 주가방어력(12점, 과거 급락장 실측 스트레스테스트),
+            E블록 추세·성장(7점, 매출·영업이익 3년 CAGR), H블록 거시·사이클·재료(8점, 실시간 정성평가).
+            세 블록 합산 27점은 v3 고유 확장분이다.</li>
+        <li><b>게이트</b>: 스트레스테스트·안전마진(DCF) 게이트는 v3에서 새로 추가한 필터로, PDF 원본에는
+            해당 개념 자체가 없다(39페이지 전체 확인).</li>
+        <li><b>등급 기준</b>: 두 방법론 모두 90점 이상 "최상급우량주" · 80점 이상 "우량주" · 70점 이상
+            "관찰대상"은 PDF 원본과 동일하다. 다만 70점 미만 등급명은 PDF 원본에 없으며, "미달"은
+            v3 쪽 표기를 그대로 가져온 이 파이프라인만의 확장 라벨이다.</li>
+        <li><b>본 리포트에 실리는 기준</b>: v3 총점이 70점(관찰대상) 미만이면 그날 해당 시장(한국/미국)
+            리포트 자체를 발행하지 않는다(리오님 요청 — 기준 미달 종목을 억지로 리포트에 넣지 않음).</li>
+    </ul>
+</div>
 
 <div class="disclaimer">
     본 리포트는 자동화된 정량·정성 스코어카드 산출 결과이며 투자 조언이 아닙니다. 데이터 결측 항목은
     임의로 추정하지 않고 "N/A"로 표기했으며, 이는 저평가/고평가 판단과 무관합니다. 특히 "IFRS18 투명성"
     항목의 MPM 공식화 정성평가는 IFRS18 자체가 2027년부터 의무 시행(조기적용 가능)이라 그 전까지는
     대부분의 종목에서 N/A가 정상입니다(회사의 결함이 아님). 게이트(스트레스테스트, 안전마진)를
-    통과하지 못한 종목은 총점과 무관하게 "관찰" 등급으로 표기됩니다. 투자 판단과 책임은
-    투자자 본인에게 있습니다.
+    통과하지 못한 종목은 총점과 무관하게 "관찰" 등급으로, v3 총점이 70점 미만인 종목은 "미달" 등급으로
+    표기되며 두 경우 모두 이 리포트에는 수록되지 않습니다. "미달"은 PDF 원본에 없는 이 파이프라인의
+    확장 등급 표기입니다. 색상 표시(빨강=긍정/파랑=부정)는 각 항목 만점 대비 득점률 기준의 상대적
+    표시이며 투자 신호가 아닙니다. 투자 판단과 책임은 투자자 본인에게 있습니다.
 </div>
 
-<div id="footer_content">Quality Stock Daily · {{ as_of_date }} 자동 생성 · v3 스코어카드</div>
+<div id="footer_content">Quality Stock Daily · {{ as_of_date }} 자동 생성 · v3 + PDF원본 병행 스코어카드</div>
 
 </body>
 </html>

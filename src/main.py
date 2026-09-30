@@ -39,10 +39,33 @@ from src import qualitative, universe
 from src.collectors import dart_collector, krx_collector, us_collector
 from src.notify.telegram_notifier import TelegramNotifyError, send_pdf_report
 from src.report.pdf_generator import StockReportEntry, generate_pdf
+from src.scoring.altman import compute_altman_z
 from src.scoring.dcf import compute_margin_of_safety, compute_wacc
 from src.scoring.models import RawFinancials, ScoreReport
+from src.scoring import pdf_original
 from src.scoring.scorecard import compute_score
 from src.selection import SelectionResult, record_pick, select_daily_pick
+
+# 다개년 시계열 조회 연수 — 이익잉여금(PDF 원본 항목③ "10년 연속 증가")은
+# 10년이 이상적이나, KR은 DART 사업연도별 재호출(비용) 때문에, US는 yfinance
+# 자체가 최근 4개년만 제공하기 때문에 실제로는 이보다 짧게 확보되는 경우가
+# 많다 — 확보한 연수 그대로 note에 정직하게 남긴다(models.py 원칙).
+RETAINED_EARNINGS_LOOKBACK_YEARS = 8
+REVENUE_OPINCOME_LOOKBACK_YEARS = 5
+
+
+def _cagr_from_year_series(series: list[tuple[str, float]]) -> float | None:
+    """series: [(연도, 값), ...] 오래된순(dart_collector.get_multi_year_account
+    반환 형식 그대로). 가장 오래된 값이 0 이하이면 성장률 계산이 무의미하므로
+    None(지어내지 않음)."""
+    if len(series) < 2:
+        return None
+    oldest_val = series[0][1]
+    newest_val = series[-1][1]
+    periods = len(series) - 1
+    if oldest_val <= 0 or periods <= 0:
+        return None
+    return round(((newest_val / oldest_val) ** (1 / periods) - 1) * 100, 2)
 
 STRESS_TEST_WINDOW_DAYS = 180  # 최근 N일 롤링 구간의 지수 대비 최대낙폭으로 D블록/게이트 평가
 
@@ -287,6 +310,8 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
 
     moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
     commercial_code_benefit_qual = None
+    retained_earnings_series = None
+    altman_z = None
     if with_qualitative:
         moat_qual = qualitative.research_moat(ticker, candidate["name"], "KR", as_of)
         ifrs18_segment_disclosed, ifrs18_mpm_qual = qualitative.research_ifrs18(
@@ -296,6 +321,69 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         commercial_code_benefit_qual = qualitative.research_commercial_code_benefit(
             ticker, candidate["name"], "KR", as_of
         )
+
+        # 2026-09-30 신설: 이익잉여금 다개년 시계열 + Altman Z용 유동자산/유동부채는
+        # fnlttSinglAcntAll.json 1회 호출로는 전전기까지 안 오는(IS/CF 계정 한정)
+        # DART 구조적 한계 때문에 사업연도를 바꿔가며 실제로 여러 번 호출해야 한다
+        # (dart_collector.get_multi_year_account 참고) — 비용 때문에 정성평가
+        # 재채점 대상(top-N)에만 적용한다.
+        end_year_int = int(bsns_year)
+        try:
+            re_series = dart_collector.get_multi_year_account(
+                corp_code, end_year_int, RETAINED_EARNINGS_LOOKBACK_YEARS,
+                sj_div="BS", keywords=["이익잉여금"], exact=True,
+            )
+        except dart_collector.DartApiError as e:
+            print(f"[{ticker}] 이익잉여금 다개년 조회 실패: {e}")
+            re_series = []
+        retained_earnings_series = re_series if len(re_series) >= 2 else None
+        retained_earnings_latest = re_series[-1][1] if re_series else None
+
+        try:
+            ca_series = dart_collector.get_multi_year_account(
+                corp_code, end_year_int, 1, sj_div="BS", keywords=["유동자산"], exact=True,
+            )
+            cl_series = dart_collector.get_multi_year_account(
+                corp_code, end_year_int, 1, sj_div="BS", keywords=["유동부채"], exact=True,
+            )
+        except dart_collector.DartApiError as e:
+            print(f"[{ticker}] 유동자산/유동부채 조회 실패: {e}")
+            ca_series = cl_series = []
+        current_assets = ca_series[-1][1] if ca_series else None
+        current_liabilities = cl_series[-1][1] if cl_series else None
+        altman_z = compute_altman_z(
+            current_assets=current_assets,
+            current_liabilities=current_liabilities,
+            retained_earnings=retained_earnings_latest,
+            ebit=op_income_3y[0],
+            total_assets=total_assets,
+            market_cap=market_cap,
+            total_liabilities=total_liabilities,
+            revenue=revenue_3y[0],
+        )
+
+        # 2026-09-29 1차 구현의 revenue_3y/op_income_3y는 단일 bsns_year 호출의
+        # thstrm/frmtrm/bfefrmtrm 3개 컬럼에 의존했는데, DART가 IS 계정에는
+        # bfefrmtrm을 사실상 채워주지 않아(2026-09-30 발견) 대부분 1개년치만
+        # 확보되고 CAGR이 구조적으로 N/A였다 — 사업연도를 바꿔가며 재조회한
+        # 더 긴 시계열이 확보되면 그걸로 CAGR을 다시 계산해 덮어쓴다(top-N만,
+        # 비용 관리).
+        try:
+            revenue_multi = dart_collector.get_multi_year_account(
+                corp_code, end_year_int, REVENUE_OPINCOME_LOOKBACK_YEARS,
+                sj_div="IS", keywords=["매출액"],
+            )
+            op_income_multi = dart_collector.get_multi_year_account(
+                corp_code, end_year_int, REVENUE_OPINCOME_LOOKBACK_YEARS,
+                sj_div="IS", keywords=["영업이익"],
+            )
+        except dart_collector.DartApiError as e:
+            print(f"[{ticker}] 매출/영업이익 다개년 조회 실패: {e}")
+            revenue_multi = op_income_multi = []
+        if len(revenue_multi) >= 2:
+            revenue_cagr = _cagr_from_year_series(revenue_multi)
+        if len(op_income_multi) >= 2:
+            op_income_cagr = _cagr_from_year_series(op_income_multi)
 
     data = RawFinancials(
         ticker=ticker, company_name=candidate["name"], market="KR", as_of_date=as_of.isoformat(),
@@ -310,9 +398,9 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         total_assets_latest=total_assets,
         ifrs18_segment_disclosed=ifrs18_segment_disclosed,
         ifrs18_mpm_qual=ifrs18_mpm_qual,
-        retained_earnings_series=None,
+        retained_earnings_series=retained_earnings_series,
         debt_ratio_pct=debt_ratio_pct,
-        altman_z=None,
+        altman_z=altman_z,
         stress_test_result=stress,
         revenue_cagr_3y_pct=revenue_cagr,
         op_income_cagr_3y_pct=op_income_cagr,
@@ -330,7 +418,9 @@ def build_kr_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
-    return compute_score(data)
+    report = compute_score(data)
+    report.pdf_original = pdf_original.compute_pdf_score(data)  # type: ignore[attr-defined]
+    return report
 
 
 def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = False) -> ScoreReport:
@@ -447,6 +537,30 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
 
     moat_qual = ifrs18_segment_disclosed = ifrs18_mpm_qual = macro_qual = None
     commercial_code_benefit_qual = None
+    # 2026-09-30 신설: 이익잉여금 다개년 시계열(PDF 원본 항목③)과 Altman
+    # Z-Score용 유동자산/유동부채·이익잉여금은 yfinance가 balance_sheet
+    # 호출 하나로 이미 최근 4개년치를 다 주므로(KR과 달리 연도별 재호출 불필요),
+    # with_qualitative 여부와 무관하게 추가 API 호출 없이 항상 채운다.
+    re_pairs = [
+        (y, v) for y, v in zip(fundamentals["years"], fundamentals["retained_earnings"])
+        if v is not None
+    ][::-1]  # fundamentals는 최신이 인덱스0 — 오래된순으로 뒤집음
+    retained_earnings_series = re_pairs if len(re_pairs) >= 2 else None
+    retained_earnings_latest = fundamentals["retained_earnings"][0] if fundamentals["retained_earnings"] else None
+    current_assets_latest = fundamentals["current_assets"][0] if fundamentals["current_assets"] else None
+    current_liabilities_latest = fundamentals["current_liabilities"][0] if fundamentals["current_liabilities"] else None
+    altman_z = compute_altman_z(
+        current_assets=current_assets_latest,
+        current_liabilities=current_liabilities_latest,
+        retained_earnings=retained_earnings_latest,
+        ebit=ebit,
+        total_assets=fundamentals["total_assets"][0] if fundamentals["total_assets"] else None,
+        market_cap=market_cap,
+        # 주의: Altman Z 공식의 "총부채"는 이자부채(total_debt)가 아니라
+        # 재무상태표 부채총계(total_liabilities)다 — 혼동하지 않도록 명시.
+        total_liabilities=fundamentals["total_liabilities"][0] if fundamentals["total_liabilities"] else None,
+        revenue=fundamentals["revenue"][0] if fundamentals["revenue"] else None,
+    )
     if with_qualitative:
         moat_qual = qualitative.research_moat(ticker, candidate["name"], "US", as_of)
         # 미국 상장사는 US GAAP을 쓰므로 IFRS18(IFRS 전용) 조기적용 여부는
@@ -476,9 +590,9 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         total_assets_latest=fundamentals["total_assets"][0] if fundamentals["total_assets"] else None,
         ifrs18_segment_disclosed=ifrs18_segment_disclosed,
         ifrs18_mpm_qual=ifrs18_mpm_qual,
-        retained_earnings_series=None,
+        retained_earnings_series=retained_earnings_series,
         debt_ratio_pct=debt_ratio_pct,
-        altman_z=None,
+        altman_z=altman_z,
         stress_test_result=stress,
         revenue_cagr_3y_pct=revenue_cagr,
         op_income_cagr_3y_pct=op_income_cagr,
@@ -496,7 +610,9 @@ def build_us_report(candidate: dict, as_of: dt.date, with_qualitative: bool = Fa
         macro_qual=macro_qual,
         margin_of_safety_result=mos_result_dict,
     )
-    return compute_score(data)
+    report = compute_score(data)
+    report.pdf_original = pdf_original.compute_pdf_score(data)  # type: ignore[attr-defined]
+    return report
 
 
 def _report_missing_pick(result: SelectionResult) -> str:
@@ -597,31 +713,51 @@ def run_daily(as_of: dt.date | None = None, dry_run: bool = False) -> Path | Non
     if us_result.picked is None:
         print(_report_missing_pick(us_result))
 
+    # 2026-09-30 신설(리오님 지시: "최종 등급에 충족하는 기업만 보고서로 받고
+    # 싶어"): 게이트를 통과해도 v3 총점이 70점 미만("미달" 등급)이면 리포트에
+    # 포함하지 않는다. select_daily_pick()은 게이트 통과 종목 중 최고점을
+    # 고르는 로직을 그대로 유지하고(변경하지 않음 — 순위 계산 자체는 이미
+    # 옳음), 여기서 "그 최고점이 실제로 관찰대상(70점) 이상인가"만 추가로
+    # 검사한다. top-20 밖까지 더 탐색해서 억지로 기준을 채우는 픽을 만들어내지
+    # 않는다 — 그러려면 정성평가(Gemini)를 top-20보다 많은 종목에 걸어야 해
+    # 비용이 커지고, 무엇보다 "없으면 없다고 정직하게 보고한다"는 이 프로젝트의
+    # 핵심 원칙에도 어긋난다. 대신 2026-09-30에 이익잉여금 다개년·Altman
+    # Z-Score 등 결측 데이터를 실제로 채워 넣는 작업을 했으므로(README 참고),
+    # 앞으로는 순수 데이터 결측으로 인한 "미달"은 줄어들 것으로 기대한다.
     entries = []
-    if kr_result.picked is not None:
-        entries.append(StockReportEntry(report=kr_result.picked))
-    if us_result.picked is not None:
-        entries.append(StockReportEntry(report=us_result.picked))
+    for result in (kr_result, us_result):
+        if result.picked is None:
+            continue
+        grade = result.picked.final_grade
+        if grade == "미달":
+            print(
+                f"[{as_of.isoformat()}] {result.market} 오늘의 최고점 종목 "
+                f"{result.picked.company_name}({result.picked.total_score:.2f}점)이 "
+                f"'미달' 등급이라 리포트에서 제외합니다(기준: 관찰대상=70점 이상)."
+            )
+            continue
+        entries.append(StockReportEntry(report=result.picked))
 
     if not entries:
-        print("오늘은 KR/US 모두 게이트 통과 픽이 없어 PDF를 생성하지 않습니다.")
+        print("오늘은 KR/US 모두 '관찰대상(70점)' 이상 기준을 충족하는 픽이 없어 PDF를 생성하지 않습니다.")
         return None
 
     out_path = OUTPUT_DIR / f"report_{as_of.isoformat()}.pdf"
     generate_pdf(entries, as_of_date=as_of.isoformat(), output_path=out_path)
     print(f"PDF 생성 완료: {out_path}")
 
-    if kr_result.picked is not None:
+    # entries에 실제로 포함된(=미달로 걸러지지 않은) 종목만 쿨다운 기록에 남긴다
+    # — 미달로 제외된 종목까지 쿨다운시키면 내일도 같은 이유로 후보에서
+    # 계속 빠지게 되는데, 그건 이 함수가 결정할 일이 아니다(단순히 "오늘은
+    # 리포트 안 보냄"일 뿐 "이 종목을 앞으로 계속 제외"가 아님).
+    entry_tickers = {e.report.ticker for e in entries}
+    if kr_result.picked is not None and kr_result.picked.ticker in entry_tickers:
         record_pick("KR", kr_result.picked.ticker, as_of)
-    if us_result.picked is not None:
+    if us_result.picked is not None and us_result.picked.ticker in entry_tickers:
         record_pick("US", us_result.picked.ticker, as_of)
 
     if not dry_run:
-        caption_parts = []
-        if kr_result.picked:
-            caption_parts.append(f"KR: {kr_result.picked.company_name}")
-        if us_result.picked:
-            caption_parts.append(f"US: {us_result.picked.company_name}")
+        caption_parts = [f"{e.report.market}: {e.report.company_name}" for e in entries]
         try:
             send_pdf_report(
                 out_path,
@@ -644,7 +780,11 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
 
     candidate = {"ticker": "005930", "name": "삼성전자", "market": "KOSPI"}
     print(f"=== build_kr_report() 진단: {candidate['name']}({candidate['ticker']}), as_of={as_of} ===")
-    report = build_kr_report(candidate, as_of)
+    # 2026-09-30: with_qualitative=True로 호출해 이익잉여금 다개년·Altman
+    # Z·PDF원본 병행점수 등 top-N 전용 보강 로직까지 함께 점검한다
+    # (GEMINI_API_KEY가 없어도 정성평가만 N/A로 남고 DART 다개년 조회는
+    # 정상 진행됨 — qualitative.py가 개별적으로 실패를 흡수하는 구조).
+    report = build_kr_report(candidate, as_of, with_qualitative=True)
     print(json.dumps(
         {
             "ticker": report.ticker,
@@ -670,6 +810,15 @@ def _diagnose_kr_report(as_of: dt.date) -> None:
                 {"key": g.gate_key, "passed": g.passed, "reason": g.reason}
                 for g in report.gates
             ],
+            "pdf_original": {
+                "total_score": report.pdf_original.total_score,
+                "total_possible": report.pdf_original.total_possible,
+                "final_grade": report.pdf_original.final_grade,
+                "items": [
+                    {"name": c.name, "points_awarded": c.points_awarded, "max_points": c.max_points, "note": c.note}
+                    for c in report.pdf_original.items
+                ],
+            } if getattr(report, "pdf_original", None) else None,
         },
         ensure_ascii=False, indent=2,
     ))

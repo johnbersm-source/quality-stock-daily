@@ -331,6 +331,62 @@ def get_treasury_stock(corp_code: str, bsns_year: str, reprt_code: str = REPRT_A
     return payload.get("list", [])
 
 
+def get_multi_year_account(
+    corp_code: str, end_year: int, n_years: int, sj_div: str, keywords: list[str],
+    exact: bool = False, amount_key: str = "thstrm_amount", reprt_code: str = REPRT_ANNUAL,
+    fs_div: str = "CFS", pace_sec: float = 0.3,
+) -> list[tuple[str, float]]:
+    """end_year부터 과거로 n_years개 사업연도를 순회하며 계정 하나의 thstrm_amount를
+    뽑아 [(연도, 금액), ...] 오래된순으로 반환한다.
+
+    2026-09-30 신설 배경: fnlttSinglAcntAll.json(전체 재무제표) 한 번 호출로는
+    손익계산서·현금흐름표 계정에 대해 당기(thstrm)·전기(frmtrm) 2개 구간만 오고
+    전전기(bfefrmtrm)는 오지 않는다(이 세션에서 영원무역홀딩스 실사례로 확인 —
+    revenue_3y/op_income_3y가 항상 1개년치만 채워져 E블록 추세·성장이 구조적으로
+    N/A였던 원인). 재무상태표(BS) 계정은 전전기까지 오는 경우도 있지만 종목마다
+    다를 수 있어 신뢰하지 않는다. 진짜 다개년(이익잉여금 10년 추이, PDF 원본
+    항목③) 히스토리가 필요하면 사업연도(bsns_year)를 바꿔가며 이 함수처럼 실제로
+    n_years번 호출하는 수밖에 없다 — 850종목 전체에 적용하면 호출량이 비현실적으로
+    커지므로 정성평가 2단계(qualitative_top_n)와 같은 원칙으로 top-N 종목에만
+    적용해야 한다(main.py 호출부 참고).
+
+    특정 연도에 013(데이터없음) 등 오류가 나면 그 연도만 건너뛰고 계속 진행한다
+    (한 해 결측으로 전체를 실패시키지 않음 — 대신 결과 리스트가 짧아질 뿐이고,
+    호출부가 실제 확보한 연수를 정직하게 note에 남겨야 한다).
+
+    exact=True면 계정명이 keywords[0]과 정확히 일치하는 행만 사용한다 — 예:
+    "유동자산"을 부분일치(in)로 찾으면 "비유동자산" 행도 걸려버리는 문제가
+    있어(2026-09-30 발견), Altman Z-Score용 유동자산/유동부채 추출에는 반드시
+    exact=True를 써야 한다."""
+    results: list[tuple[str, float]] = []
+    for i in range(n_years):
+        year = str(end_year - i)
+        try:
+            rows = get_full_financial_statement(corp_code, year, reprt_code, fs_div)
+        except DartApiError:
+            time.sleep(pace_sec)
+            continue
+        value = None
+        for r in rows:
+            if r.get("sj_div") != sj_div:
+                continue
+            name = (r.get("account_nm") or "").strip()
+            if exact:
+                if name != keywords[0]:
+                    continue
+            elif not all(k in name for k in keywords):
+                continue
+            v = _to_number(r.get(amount_key))
+            if v is not None:
+                value = v
+                break
+        if value is not None:
+            results.append((year, value))
+        time.sleep(pace_sec)
+    results.sort(key=lambda t: t[0])
+    return results
+
+
 def _to_number(v: str | None) -> float | None:
     if v in (None, "", "-"):
         return None

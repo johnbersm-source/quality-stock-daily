@@ -248,6 +248,13 @@ def get_fundamentals_history(ticker: str) -> dict:
     total_liabilities = _row(bal, ["Total Liabilities Net Minority Interest"])
     equity = _row(bal, ["Stockholders Equity", "Common Stock Equity"])
     ocf = _row(cf, ["Operating Cash Flow"])
+    # 2026-09-30 추가: 이익잉여금 장기추이(PDF 원본 항목③, C블록)와 Altman
+    # Z-Score(유동자산-유동부채=Working Capital)에 필요한 계정. yfinance는
+    # 이미 최근 4개년치를 한 번의 balance_sheet 호출로 주므로(위 DART처럼
+    # 연도별 재호출이 필요 없음) 추가 API 호출 비용이 없다.
+    retained_earnings = _row(bal, ["Retained Earnings"])
+    current_assets = _row(bal, ["Current Assets"])
+    current_liabilities = _row(bal, ["Current Liabilities"])
 
     if net_income is None:
         raise ValueError(f"순이익(Net Income) 계정을 찾지 못했습니다: ticker={ticker}, "
@@ -261,6 +268,7 @@ def get_fundamentals_history(ticker: str) -> dict:
     common_years = sorted(common_years, reverse=True)
 
     years, rev_l, opi_l, ni_l, ta_l, tl_l, eq_l, roe_l, ocf_l = [], [], [], [], [], [], [], [], []
+    re_l, ca_l, cl_l = [], [], []
     for y in common_years:
         r = revenue.get(y) if revenue is not None else None
         o = op_income.get(y) if op_income is not None else None
@@ -278,6 +286,12 @@ def get_fundamentals_history(ticker: str) -> dict:
         roe_l.append(float(n) / float(e) * 100 if e else None)
         ocf_val = ocf.get(y) if ocf is not None else None
         ocf_l.append(float(ocf_val) if ocf_val is not None and not pd.isna(ocf_val) else None)
+        re_val = retained_earnings.get(y) if retained_earnings is not None else None
+        re_l.append(float(re_val) if re_val is not None and not pd.isna(re_val) else None)
+        ca_val = current_assets.get(y) if current_assets is not None else None
+        ca_l.append(float(ca_val) if ca_val is not None and not pd.isna(ca_val) else None)
+        cl_val = current_liabilities.get(y) if current_liabilities is not None else None
+        cl_l.append(float(cl_val) if cl_val is not None and not pd.isna(cl_val) else None)
 
     return {
         "ticker": ticker,
@@ -290,6 +304,9 @@ def get_fundamentals_history(ticker: str) -> dict:
         "equity": eq_l,
         "roe_pct": roe_l,
         "ocf": ocf_l,
+        "retained_earnings": re_l,
+        "current_assets": ca_l,
+        "current_liabilities": cl_l,
     }
 
 

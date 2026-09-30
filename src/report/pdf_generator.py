@@ -11,6 +11,7 @@ Ubuntu 러너에도 한글 폰트가 기본 설치되어 있지 않으므로 번
 """
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,12 +20,80 @@ from jinja2 import Environment, FileSystemLoader
 from xhtml2pdf import pisa
 
 from ..scoring.models import ScoreReport
-from .charts import generate_block_score_chart
+from .charts import generate_block_score_chart, generate_pdf_original_chart
+from .plain_language import explain as plain_explain
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TEMPLATE_DIR = Path(__file__).resolve().parent
 FONT_REGULAR = PROJECT_ROOT / "assets" / "fonts" / "NanumGothic.ttf"
 FONT_BOLD = PROJECT_ROOT / "assets" / "fonts" / "NanumGothicBold.ttf"
+
+# 2026-09-30 신설 — 리오님 요청 사항 반영:
+# 1) 게이트 이름 한글화("Shareholder Yield" 등 영어 용어도 포함)
+# 2) 블록명의 "(신설, PDF 없음)" 같은 괄호를 없애고 대신 뱃지로 구분 표시
+# 3) 점수 비율에 따른 긍정(빨강)/부정(파랑) 색상 클래스 판정
+_GATE_KOREAN = {
+    "stress_test_gate": "주가 방어력 테스트(과거 급락장 실측)",
+    "margin_of_safety_gate": "안전마진 테스트(내재가치 대비 할인폭)",
+}
+_COMPONENT_KOREAN = {
+    "Shareholder Yield": "주주환원율(배당+자사주)",
+}
+_BLOCK_ORIGIN = {
+    "A_profitability_moat": "PDF원본 확장",
+    "B_earnings_quality": "PDF원본 확장",
+    "C_balance_sheet_resilience": "PDF원본 확장",
+    "D_drawdown_defense": "v3 신설",
+    "E_trend_growth": "v3 신설",
+    "F_price": "PDF원본 확장",
+    "G_shareholder_return_governance": "PDF원본 확장",
+    "H_macro_catalyst": "v3 신설",
+}
+
+
+def _clean_block_name(name: str) -> str:
+    """블록명 끝의 "(신설, PDF 없음)" 같은 괄호 설명을 제거한다 — 그 정보는
+    이제 별도 뱃지(block_origin)로 표시하므로 이름 자체엔 필요 없다."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+
+
+def _gate_korean(gate_key: str) -> str:
+    return _GATE_KOREAN.get(gate_key, gate_key)
+
+
+def _component_korean(name: str) -> str:
+    return _COMPONENT_KOREAN.get(name, name)
+
+
+def _block_origin(block_key: str) -> str:
+    return _BLOCK_ORIGIN.get(block_key, "")
+
+
+_NUM_PATTERN = re.compile(r"[+-]?\d[\d,]*\.?\d*\s*%")
+
+
+def _highlight_numbers(text: str) -> str:
+    """설명(note) 텍스트 안의 핵심 수치(퍼센트 값)를 다른 색으로 강조한다
+    (2026-09-30, 리오님 요청: "설명에 해당하는 내용 중 핵심 요소는 다른
+    색으로 강조"). 빨강/파랑(긍정/부정 판정색)과 겹치지 않는 세 번째 색을
+    쓴다 — CSS .highlight-num, 판정색과 혼동되지 않도록 골드/브라운 계열."""
+    if not text:
+        return text
+    return _NUM_PATTERN.sub(lambda m: f'<span class="highlight-num">{m.group(0)}</span>', text)
+
+
+def _perf_class(points_awarded: float | None, max_points: float) -> str:
+    """긍정(빨강)/중립/부정(파랑) 색상 클래스 — 만점 대비 60% 이상=긍정,
+    40% 미만=부정, 그 사이는 중립(리오님 요청: "점수가 기준치보다 높을때
+    긍정적일때 진한 빨간색, 부정적일때 파란색")."""
+    if points_awarded is None:
+        return "perf-na"
+    ratio = points_awarded / max_points if max_points else 0
+    if ratio >= 0.6:
+        return "perf-pos"
+    if ratio < 0.4:
+        return "perf-neg"
+    return "perf-mid"
 
 
 @dataclass
@@ -32,6 +101,7 @@ class StockReportEntry:
     report: ScoreReport
     narrative: str | None = None  # Gemini 등 내러티브 생성 단계에서 채워질 자유서술 코멘트(선택)
     chart_uri: str | None = field(default=None, repr=False)  # render_html이 내부적으로 채움(호출부에서 직접 설정 불필요)
+    pdf_chart_uri: str | None = field(default=None, repr=False)  # PDF원본 10항목 득점률 차트(render_html이 채움)
 
 
 class PdfGenerationError(Exception):
@@ -61,6 +131,16 @@ def _attach_charts(entries: list[StockReportEntry], chart_dir: Path) -> None:
             print(f"[pdf_generator] {entry.report.ticker} 블록 점수 차트 생성 실패(차트 없이 진행): {e}")
             entry.chart_uri = None
 
+        pdf_original_report = getattr(entry.report, "pdf_original", None)
+        if pdf_original_report is not None:
+            try:
+                pdf_png_path = chart_dir / f"pdf_chart_{i}_{entry.report.ticker}.png"
+                generate_pdf_original_chart(pdf_original_report, pdf_png_path)
+                entry.pdf_chart_uri = pdf_png_path.as_uri()
+            except Exception as e:  # noqa: BLE001 - 차트는 부가 기능, 실패해도 리포트 생성은 계속
+                print(f"[pdf_generator] {entry.report.ticker} PDF원본 항목 차트 생성 실패(차트 없이 진행): {e}")
+                entry.pdf_chart_uri = None
+
 
 def render_html(entries: list[StockReportEntry], as_of_date: str, chart_dir: Path | None = None) -> str:
     """chart_dir을 주면 그 안에 종목별 블록 점수 PNG를 그려 각 entry.chart_uri를
@@ -72,6 +152,13 @@ def render_html(entries: list[StockReportEntry], as_of_date: str, chart_dir: Pat
     if chart_dir is not None:
         _attach_charts(entries, chart_dir)
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+    env.globals["gate_korean"] = _gate_korean
+    env.globals["component_korean"] = _component_korean
+    env.globals["clean_block_name"] = _clean_block_name
+    env.globals["block_origin"] = _block_origin
+    env.globals["perf_class"] = _perf_class
+    env.globals["plain_explain"] = plain_explain
+    env.globals["highlight_numbers"] = _highlight_numbers
     template = env.get_template("template.html")
     return template.render(
         stocks=entries,

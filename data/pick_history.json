@@ -13,5 +13,10 @@
     "market": "US",
     "ticker": "VTRS",
     "date": "2026-09-29"
+  },
+  {
+    "market": "KR",
+    "ticker": "000270",
+    "date": "2026-09-30"
   }
 ]

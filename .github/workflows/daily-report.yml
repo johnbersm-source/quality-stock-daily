@@ -21,10 +21,17 @@ on:
 permissions:
   contents: write  # data/pick_history.json 커밋에 필요 (쿨다운 기록 영속화)
 
+# 2026-10-09 Actions 분(minutes) 절감: 같은 워크플로가 겹쳐 돌지 않게 한다.
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
+
 jobs:
   run-daily-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 2026-10-09: 90 -> 70. 정상 실행은 43~53분. 90분까지 가서 취소(리포트 0건)되던
+    # 실행(10/1, 10/5, 10/8, 10/9)은 아래 SELECTION_TIME_BUDGET_SEC로 스스로 마무리한다.
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +77,9 @@ jobs:
           # 한 줄도 안 찍혀 병목 지점을 못 봤다. -u(unbuffered) + 명시적
           # PYTHONUNBUFFERED로 이중 보장.
           PYTHONUNBUFFERED: "1"
+          # 2026-10-09: 시장(KR/US)별 채점 시간 예산(초). 초과 시 그때까지 채점분으로
+          # 마무리(src/selection.py). 정상 실행(시장당 ~20분)에는 영향 없음.
+          SELECTION_TIME_BUDGET_SEC: "1500"
         run: python -u src/main.py
 
       - name: Save DART corp_code cache
@@ -85,7 +95,7 @@ jobs:
         with:
           name: daily-report-${{ github.run_id }}
           path: data/output/*.pdf
-          retention-days: 30
+          retention-days: 7
 
       # GitHub Actions 러너는 매번 새로 체크아웃되는 휘발성 환경이라, 쿨다운(최근
       # N일 내 픽 제외) 판단에 쓰는 data/pick_history.json이 러너 안에서만 갱신되고

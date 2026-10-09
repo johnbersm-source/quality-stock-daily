@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -101,7 +102,20 @@ def select_daily_pick(
     total = len(eligible)
     loop_start = time.monotonic()
     scored: list[ScoreReport] = []
+    # 2026-10-09: 시장별 채점 시간 예산(초). GitHub Actions 분(minutes) 절감 목적 —
+    # 90분 타임아웃으로 통째로 취소(리포트 0건 + 90분 과금)되는 대신, 예산 초과 시
+    # 그때까지 채점된 종목(eligible은 시가총액 순이라 대형주부터)으로 마무리한다.
+    # 환경변수 SELECTION_TIME_BUDGET_SEC 미설정/0이면 예전처럼 무제한.
+    budget = float(os.environ.get("SELECTION_TIME_BUDGET_SEC", "0") or 0)
+    budget_hit = False
     for i, c in enumerate(eligible, start=1):
+        if budget and time.monotonic() - loop_start > budget:
+            budget_hit = True
+            print(
+                f"[selection] {market} 시간 예산 {budget:.0f}s 초과 — "
+                f"{i - 1}/{total}종목까지만 채점하고 마무리", flush=True,
+            )
+            break
         t0 = time.monotonic()
         try:
             scored.append(score_fn(c))
@@ -151,11 +165,12 @@ def select_daily_pick(
         scored.sort(key=lambda r: r.total_score, reverse=True)
 
     gate_passed = [r for r in scored if r.all_gates_passed]
+    budget_note = f" (시간 예산 초과로 {len(scored)}/{total}종목만 채점)" if budget_hit else ""
 
     if gate_passed:
         picked = gate_passed[0]
         reason = (f"{len(eligible)}개 후보 중 {len(gate_passed)}개 게이트 통과, "
-                  f"최고점 {picked.company_name}({picked.total_score:.2f}점) 선정")
+                  f"최고점 {picked.company_name}({picked.total_score:.2f}점) 선정{budget_note}")
         return SelectionResult(
             market=market, picked=picked, reference_top3=scored[:3],
             excluded_by_cooldown=sorted(excluded), all_candidates_scored=len(scored),
@@ -163,7 +178,7 @@ def select_daily_pick(
         )
 
     reason = (f"{len(eligible)}개 후보 전부 게이트 미통과(또는 채점 실패) — 픽 없음. "
-              f"점수 상위 3개는 참고용으로만 병기")
+              f"점수 상위 3개는 참고용으로만 병기{budget_note}")
     return SelectionResult(
         market=market, picked=None, reference_top3=scored[:3],
         excluded_by_cooldown=sorted(excluded), all_candidates_scored=len(scored),

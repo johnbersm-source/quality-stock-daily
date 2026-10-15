@@ -81,14 +81,6 @@ jobs:
           path: data/cache
           key: dart-corp-code-map-${{ github.run_id }}
 
-      - name: Upload generated PDF as artifact (백업/디버깅용)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: daily-report-${{ github.run_id }}
-          path: data/output/*.pdf
-          retention-days: 30
-
       # GitHub Actions 러너는 매번 새로 체크아웃되는 휘발성 환경이라, 쿨다운(최근
       # N일 내 픽 제외) 판단에 쓰는 data/pick_history.json이 러너 안에서만 갱신되고
       # 다음날 실행에는 반영되지 않는다 — 그래서 실행 후 이 파일만 저장소에 다시

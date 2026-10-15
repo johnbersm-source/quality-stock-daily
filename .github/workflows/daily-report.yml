@@ -24,7 +24,9 @@ permissions:
 jobs:
   run-daily-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 2026-10-15: 90분 → 180분. 10/8·10/9 실행이 90분 제한에 걸려 취소됨(KR 정성평가 12/20 단계에서 중단).
+    # 공개 저장소의 GitHub 호스팅 러너는 무료이므로 상향해도 분 소모 비용은 없다.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4

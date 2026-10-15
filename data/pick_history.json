@@ -18,5 +18,10 @@
     "market": "KR",
     "ticker": "000270",
     "date": "2026-09-30"
+  },
+  {
+    "market": "US",
+    "ticker": "UHS",
+    "date": "2026-10-15"
   }
 ]
